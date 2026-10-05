@@ -1,0 +1,3014 @@
+diff -ruN '--exclude=*.o' '--exclude=*.ko' '--exclude=.*.cmd' '--exclude=*.mod*' '--exclude=Module.symvers' '--exclude=modules.order' '--exclude=wifi.local.cfg' '--exclude=.git' upstream/src/mak/linux/Makefile fixed/src/mak/linux/Makefile
+--- a/src/mak/linux/Makefile	2026-10-05 07:10:36.589390546 +0800
++++ fixed/src/mak/linux/Makefile	2026-10-05 07:11:05.296074956 +0800
+@@ -39,19 +39,20 @@
+ EXTRA_CFLAGS += -DCONFIG_ZT9101XV30_SUPPORT
+ endif
+ 
+-EXTRA_CFLAGS += $(USER_EXTRA_CFLAGS)
+-EXTRA_CFLAGS += -O1
+-EXTRA_CFLAGS += -I$(WDRV_DIR)/os/
+-EXTRA_CFLAGS += -I$(WDRV_DIR)/os/linux
+-EXTRA_CFLAGS += -I$(WDRV_DIR)/os/linux/os_porting
+-EXTRA_CFLAGS += -I$(WDRV_DIR)/os/linux/hif
+-EXTRA_CFLAGS += -I$(WDRV_DIR)/os/linux/netdev
+-EXTRA_CFLAGS += -I$(WDRV_DIR)/os/linux/cfg80211
+-EXTRA_CFLAGS += -I$(WDRV_DIR)/os/linux/iw
+-EXTRA_CFLAGS += -I$(WDRV_DIR)/os/linux/pwr
+-EXTRA_CFLAGS += -I$(WDRV_DIR)/nic
+-EXTRA_CFLAGS += -I$(WDRV_DIR)/nic/utility
+-EXTRA_CFLAGS += -I$(WDRV_DIR)/nic/p2p
++ccflags-y += $(USER_EXTRA_CFLAGS)
++ccflags-y += -O1
++ccflags-y += -I$(src)/os
++ccflags-y += -I$(src)/os/linux
++ccflags-y += -I$(src)/os/linux/os_porting
++ccflags-y += -I$(src)/os/linux/hif
++ccflags-y += -I$(src)/os/linux/netdev
++ccflags-y += -I$(src)/os/linux/cfg80211
++ccflags-y += -I$(src)/os/linux/iw
++ccflags-y += -I$(src)/os/linux/pwr
++ccflags-y += -I$(src)/nic
++ccflags-y += -I$(src)/nic/utility
++ccflags-y += -I$(src)/nic/p2p 
++
+ ifndef __linux__
+ EXTRA_CFLAGS += -D__linux__
+ endif
+@@ -67,11 +68,11 @@
+ EXTRA_CFLAGS += -Wno-uninitialized
+ EXTRA_CFLAGS += -Wno-type-limits
+ EXTRA_CFLAGS += -Wno-empty-body
+-EXTRA_CFLAGS += -w
++#EXTRA_CFLAGS += -w  # removed: was masking incompatible-pointer-types ABI bugs
+ else
+ EXTRA_CFLAGS += -Wno-all
+ EXTRA_CFLAGS += -Wno-extra
+-EXTRA_CFLAGS += -w
++#EXTRA_CFLAGS += -w  # removed: was masking incompatible-pointer-types ABI bugs
+ endif
+ 
+ ifeq ($(CONFIG_TX_SOFT_AGG), y)
+@@ -130,6 +131,7 @@
+ 
+ EXTRA_LDFLAGS += --strip-debug
+ 
++ccflags-y += $(EXTRA_CFLAGS)
+ ########################## Features ###########################
+ 
+ ifneq ($(KERNELRELEASE),)
+diff -ruN '--exclude=*.o' '--exclude=*.ko' '--exclude=.*.cmd' '--exclude=*.mod*' '--exclude=Module.symvers' '--exclude=modules.order' '--exclude=wifi.local.cfg' '--exclude=.git' upstream/src/os/linux/cfg80211/zt_cfg80211.c fixed/src/os/linux/cfg80211/zt_cfg80211.c
+--- a/src/os/linux/cfg80211/zt_cfg80211.c	2026-10-05 07:10:36.596433425 +0800
++++ fixed/src/os/linux/cfg80211/zt_cfg80211.c	2026-10-05 07:21:57.708257879 +0800
+@@ -13,18 +13,39 @@
+  * Free Software Foundation;  either version 2 of the  License, or (at your
+  * option) any later version.
+  *
++  */
++/*
++ * ... (mantém o cabeçalho original e licença intactos) ...
++ * Original Author: houchuang
++ * Copyright (c) 2021 Shandong ZTop Microelectronics Co., Ltd
++ *
++ * Modifications:
++ * Copyright (c) 2026 João Fco. O Antunes / jfco.antunes@gmail.com
++ * - Ported and fixed for Linux Kernel 6.8+ / 7.0+ compatibility
++ *   (timer_delete, cfg80211 link_id APIs, and struct usb_driver shutdown changes).
+  */
+ #include <linux/nl80211.h>
+ #include <net/cfg80211.h>
+ #include <linux/decompress/mm.h>
++#include <linux/version.h>
+ 
+-//#undef ZT_DEBUG_LEVEL
+-//#define ZT_DEBUG_LEVEL (~ZT_DEBUG_DEBUG)
+ #include "common.h"
+ #include "hif.h"
+ #include "zt_cfg80211.h"
+ #include "android/android_priv_cmd.h"
+ 
++/*
++ * Kernel 7.0 also flipped the station-event helpers we *call* into the
++ * kernel -- cfg80211_new_sta()/cfg80211_del_sta() take a wireless_dev *
++ * there, but a net_device * on 6.12.107. Both verified against the real
++ * headers. The driver tracks net_devices, so convert on the way out.
++ */
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0))
++#define ZT_STA_EVT_DEV(_ndev)   ((_ndev)->ieee80211_ptr)
++#else
++#define ZT_STA_EVT_DEV(_ndev)   (_ndev)
++#endif
++
+ #ifdef CONFIG_IOCTL_CFG80211
+ 
+ #define CFG80211_DBG(fmt, ...)      LOG_D("[%s:%d]"fmt, __func__, __LINE__, ##__VA_ARGS__)
+@@ -60,161 +81,84 @@
+     switch (type)
+     {
+         case ZT_80211_FRM_ASSOC_REQ          :
+-        {
+             return to_str(ZT_80211_FRM_ASSOC_REQ);
+-        }
+         case ZT_80211_FRM_ASSOC_RESP         :
+-        {
+             return to_str(ZT_80211_FRM_ASSOC_RESP);
+-        }
+         case ZT_80211_FRM_REASSOC_REQ        :
+-        {
+             return to_str(ZT_80211_FRM_REASSOC_REQ);
+-        }
+         case ZT_80211_FRM_REASSOC_RESP       :
+-        {
+             return to_str(ZT_80211_FRM_REASSOC_RESP);
+-        }
+         case ZT_80211_FRM_PROBE_REQ          :
+-        {
+             return to_str(ZT_80211_FRM_PROBE_REQ);
+-        }
+         case ZT_80211_FRM_PROBE_RESP         :
+-        {
+             return to_str(ZT_80211_FRM_PROBE_RESP);
+-        }
+         case ZT_80211_FRM_BEACON             :
+-        {
+             return to_str(ZT_80211_FRM_BEACON);
+-        }
+         case ZT_80211_FRM_ATIM               :
+-        {
+             return to_str(ZT_80211_FRM_ATIM);
+-        }
+         case ZT_80211_FRM_DISASSOC           :
+-        {
+             return to_str(ZT_80211_FRM_DISASSOC);
+-        }
+         case ZT_80211_FRM_AUTH               :
+-        {
+             return to_str(ZT_80211_FRM_AUTH);
+-        }
+         case ZT_80211_FRM_DEAUTH             :
+-        {
+             return to_str(ZT_80211_FRM_DEAUTH);
+-        }
+         case ZT_80211_FRM_ACTION             :
+-        {
+             return to_str(ZT_80211_FRM_ACTION);
+-        }
+-        /* control frame */
+         case ZT_80211_FRM_CTL_EXT            :
+-        {
+             return to_str(ZT_80211_FRM_CTL_EXT);
+-        }
+         case ZT_80211_FRM_BACK_REQ           :
+-        {
+             return to_str(ZT_80211_FRM_BACK_REQ);
+-        }
+         case ZT_80211_FRM_BACK               :
+-        {
+             return to_str(ZT_80211_FRM_BACK);
+-        }
+         case ZT_80211_FRM_PSPOLL             :
+-        {
+             return to_str(ZT_80211_FRM_PSPOLL);
+-        }
+         case ZT_80211_FRM_RTS                :
+-        {
+             return to_str(ZT_80211_FRM_RTS);
+-        }
+         case ZT_80211_FRM_CTS                :
+-        {
+             return to_str(ZT_80211_FRM_CTS);
+-        }
+         case ZT_80211_FRM_ACK                :
+-        {
+             return to_str(ZT_80211_FRM_ACK);
+-        }
+         case ZT_80211_FRM_CFEND              :
+-        {
+             return to_str(ZT_80211_FRM_CFEND);
+-        }
+         case ZT_80211_FRM_CFENDACK           :
+-        {
+             return to_str(ZT_80211_FRM_CFENDACK);
+-        }
+-        /* data frame */
+         case ZT_80211_FRM_DATA               :
+-        {
+             return to_str(ZT_80211_FRM_DATA);
+-        }
+         case ZT_80211_FRM_DATA_CFACK         :
+-        {
+             return to_str(ZT_80211_FRM_DATA_CFACK);
+-        }
+         case ZT_80211_FRM_DATA_CFPOLL        :
+-        {
+             return to_str(ZT_80211_FRM_DATA_CFPOLL);
+-        }
+         case ZT_80211_FRM_DATA_CFACKPOLL     :
+-        {
+             return to_str(ZT_80211_FRM_DATA_CFACKPOLL);
+-        }
+         case ZT_80211_FRM_NULLFUNC           :
+-        {
+             return to_str(ZT_80211_FRM_NULLFUNC);
+-        }
+         case ZT_80211_FRM_CFACK              :
+-        {
+             return to_str(ZT_80211_FRM_CFACK);
+-        }
+         case ZT_80211_FRM_CFPOLL             :
+-        {
+             return to_str(ZT_80211_FRM_CFPOLL);
+-        }
+         case ZT_80211_FRM_CFACKPOLL          :
+-        {
+             return to_str(ZT_80211_FRM_CFACKPOLL);
+-        }
+         case ZT_80211_FRM_QOS_DATA           :
+-        {
+             return to_str(ZT_80211_FRM_QOS_DATA);
+-        }
+         case ZT_80211_FRM_QOS_DATA_CFACK     :
+-        {
+             return to_str(ZT_80211_FRM_QOS_DATA_CFACK);
+-        }
+         case ZT_80211_FRM_QOS_DATA_CFPOLL    :
+-        {
+             return to_str(ZT_80211_FRM_QOS_DATA_CFPOLL);
+-        }
+         case ZT_80211_FRM_QOS_DATA_CFACKPOLL :
+-        {
+             return to_str(ZT_80211_FRM_QOS_DATA_CFACKPOLL);
+-        }
+         case ZT_80211_FRM_QOS_NULLFUNC       :
+-        {
+             return to_str(ZT_80211_FRM_QOS_NULLFUNC);
+-        }
+         case ZT_80211_FRM_QOS_CFACK          :
+-        {
+             return to_str(ZT_80211_FRM_QOS_CFACK);
+-        }
+         case ZT_80211_FRM_QOS_CFPOLL         :
+-        {
+             return to_str(ZT_80211_FRM_QOS_CFPOLL);
+-        }
+         case ZT_80211_FRM_QOS_CFACKPOLL      :
+-        {
+             return to_str(ZT_80211_FRM_QOS_CFACKPOLL);
+-        }
+         default:
+-        {
+             return "Unknown 80211 frame";
+-        }
+     }
+ }
++
+ #if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 0, 0))
+ #define STATION_INFO_INACTIVE_TIME  ZT_BIT(NL80211_STA_INFO_INACTIVE_TIME)
+ #define STATION_INFO_LLID           ZT_BIT(NL80211_STA_INFO_LLID)
+@@ -231,12 +175,9 @@
+ #define STATION_INFO_ASSOC_REQ_IES  0
+ #endif
+ 
+-
+ #define ZT_SSID_SCAN_AMOUNT     9
+ #define ZT_SCAN_IE_LEN_MAX      2304
+-
+ #define ZT_MAX_NUM_PMKIDS       4
+-
+ #define ZT_MAX_REMAIN_ON_CHANNEL_DURATION   5000
+ 
+ #define _ASOCREQ_IE_OFFSET_     4
+@@ -252,15 +193,14 @@
+     WLAN_CIPHER_SUITE_CCMP,
+ };
+ 
+-
+ #define CH_2G4_VAL(_channel, _freq, _flags)     \
+-    {                                               \
+-        .band               = NL80211_BAND_2GHZ,    \
+-                              .center_freq        = (_freq),              \
+-                                      .hw_value           = (_channel),           \
+-                                              .flags              = (_flags),             \
+-                                                      .max_antenna_gain   = 0,                    \
+-                                                              .max_power          = 30,                   \
++    {                                           \
++        .band               = NL80211_BAND_2GHZ,\
++        .center_freq        = (_freq),          \
++        .hw_value           = (_channel),       \
++        .flags              = (_flags),         \
++        .max_antenna_gain   = 0,                \
++        .max_power          = 30,               \
+     }
+ 
+ static struct ieee80211_channel zt_channels_2g4[] =
+@@ -283,12 +223,11 @@
+ #define ZT_CHANNELS_2G4         (&zt_channels_2g4[0])
+ #define ZT_CHANNELS_2G4_NUM     ZT_ARRAY_SIZE(zt_channels_2g4)
+ 
+-
+ #define RATE_VAL(_rate, _rateid, _flags)    \
+-    {                                           \
+-        .bitrate    = (_rate),                  \
+-                      .hw_value   = (_rateid),                \
+-                                    .flags      = (_flags),                 \
++    {                                       \
++        .bitrate    = (_rate),              \
++        .hw_value   = (_rateid),            \
++        .flags      = (_flags),             \
+     }
+ 
+ static struct ieee80211_rate zt_rates[] =
+@@ -313,7 +252,6 @@
+ #define ZT_RATES_A              (&zt_rates[4])
+ #define ZT_RATES_A_NUM          8
+ 
+-
+ static struct ieee80211_supported_band zt_band_2ghz =
+ {
+     .channels   = ZT_CHANNELS_2G4,
+@@ -346,7 +284,6 @@
+         ZT_BIT(IEEE80211_STYPE_ACTION >> 4)
+     },
+     [NL80211_IFTYPE_AP_VLAN] = {
+-
+         .tx = 0xffff,
+         .rx = ZT_BIT(IEEE80211_STYPE_ASSOC_REQ >> 4) |
+         ZT_BIT(IEEE80211_STYPE_REASSOC_REQ >> 4) |
+@@ -371,8 +308,6 @@
+         ZT_BIT(IEEE80211_STYPE_DEAUTH >> 4) |
+         ZT_BIT(IEEE80211_STYPE_ACTION >> 4)
+     },
+-
+-
+ #if defined(RTW_DEDICATED_P2P_DEVICE)
+     [NL80211_IFTYPE_P2P_DEVICE] = {
+         .tx = 0xffff,
+@@ -380,7 +315,6 @@
+         ZT_BIT(IEEE80211_STYPE_PROBE_REQ >> 4)
+     },
+ #endif
+-
+ };
+ #endif
+ 
+@@ -423,7 +357,6 @@
+     CFG80211_DBG();
+ 
+     pwiphy->signal_type     = CFG80211_SIGNAL_TYPE_MBM;
+-
+     pwiphy->max_scan_ssids  = ZT_SSID_SCAN_AMOUNT;
+     pwiphy->max_scan_ie_len = ZT_SCAN_IE_LEN_MAX;
+     pwiphy->max_num_pmkids  = ZT_MAX_NUM_PMKIDS;
+@@ -444,11 +377,10 @@
+                               | ZT_BIT(NL80211_IFTYPE_P2P_CLIENT)
+                               | ZT_BIT(NL80211_IFTYPE_P2P_GO)
+ #endif
+-
+                               ;
+     LOG_I("interface_modes:0x%x", pwiphy->interface_modes);
+ 
+-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 38)  || defined(COMPAT_KERNEL_RELEASE)) /*&& LINUX_VERSION_CODE < KERNEL_VERSION(3, 0, 0))*/
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 38)  || defined(COMPAT_KERNEL_RELEASE))
+ #ifdef CFG_ENABLE_AP_MODE
+     pwiphy->mgmt_stypes = wl_cfg80211_default_mgmt_stypes;
+ #endif
+@@ -536,10 +468,8 @@
+         }
+     }
+ 
+-    /* set group key(for wpa/wpa2) or default key(for wep) before establish */
+     if (zt_80211_is_bcast_addr(param->sta_addr))
+     {
+-        /* for wep key */
+         if ((param->alg == WLAN_CIPHER_SUITE_WEP40) ||
+                 (param->alg == WLAN_CIPHER_SUITE_WEP104))
+         {
+@@ -555,10 +485,8 @@
+ 
+             wep_key_idx = param->idx;
+             wep_key_len = param->key_len;
+-            CFG80211_DBG("wep_key_idx=%d, len=%d\n", wep_key_idx,
+-                         wep_key_len);
++            CFG80211_DBG("wep_key_idx=%d, len=%d\n", wep_key_idx, wep_key_len);
+ 
+-            /* check key idex and key len */
+             if (wep_key_idx >= ZT_80211_WEP_KEYS || wep_key_len == 0)
+             {
+                 res = -EINVAL;
+@@ -566,16 +494,12 @@
+             }
+             if (wep_key_len > 0)
+             {
+-                wep_key_len = wep_key_len <= 5 ? 5 : 13; /* 5B for wep40 and 13B for wep104 */
++                wep_key_len = wep_key_len <= 5 ? 5 : 13;
+             }
+ 
+-            /* TODO: tx=1, the key only used to encrypt data in data send process,
+-            that is to say no used for boradcast */
+-
+             if (psec_info->bWepDefaultKeyIdxSet == 0)
+             {
+                 CFG80211_DBG("wep, bWepDefaultKeyIdxSet=0");
+-                /* update encrypt algorithm */
+                 psec_info->ndisencryptstatus = zt_ndis802_11Encryption1Enabled;
+                 if (wep_key_len == 13)
+                 {
+@@ -590,10 +514,8 @@
+                 psec_info->dot11PrivacyKeyIndex = wep_key_idx;
+             }
+ 
+-            /* todo: force wep key id set to 0, other id value no used by STA */
+             if (wep_key_idx == 0)
+             {
+-                /* update default key(for wep) */
+                 psec_info->dot11PrivacyKeyIndex = wep_key_idx;
+                 zt_memcpy(&psec_info->dot11DefKey[wep_key_idx].skey[0],
+                           param->key, wep_key_len);
+@@ -603,23 +525,17 @@
+             goto exit;
+         }
+ 
+-        /* for group key */
+         if (param->alg == WLAN_CIPHER_SUITE_TKIP)
+         {
+             CFG80211_DBG("set group_key, TKIP");
+-
+             psec_info->dot118021XGrpPrivacy = _TKIP_;
+-
+-            /* KCK PTK0~127 */
+             psec_info->dot118021XGrpKeyid = param->idx;
+             zt_memcpy(psec_info->dot118021XGrpKey[param->idx].skey,
+                       param->key, ZT_MIN(param->key_len, 16));
+-            /* set mic key */
+-            /* KEK PTK128~255 */
+             zt_memcpy(psec_info->dot118021XGrptxmickey[param->idx].skey,
+-                      &param->key[16], 8); /* PTK128~191 */
++                      &param->key[16], 8);
+             zt_memcpy(psec_info->dot118021XGrprxmickey[param->idx].skey,
+-                      &param->key[24], 8); /* PTK192~255 */
++                      &param->key[24], 8);
+ 
+             psec_info->busetkipkey = zt_true;
+         }
+@@ -627,7 +543,6 @@
+         {
+             CFG80211_DBG("set group_key, CCMP");
+             psec_info->dot118021XGrpPrivacy = _AES_;
+-            /* KCK PTK0~127 */
+             psec_info->dot118021XGrpKeyid = param->idx;
+             CFG80211_DBG("set group_key id(%d), CCMP", psec_info->dot118021XGrpKeyid);
+             zt_memcpy(psec_info->dot118021XGrpKey[param->idx].skey,
+@@ -643,7 +558,6 @@
+         psec_info->dot11PrivacyAlgrthm = psec_info->dot118021XGrpPrivacy;
+         psec_info->binstallGrpkey = zt_true;
+ 
+-        /* set boardcast wdn */
+         pwdn_info = zt_wdn_find_info(pnic_info, param->sta_addr);
+         if (pwdn_info)
+         {
+@@ -654,8 +568,6 @@
+ 
+         goto exit;
+     }
+-
+-    /* set key(for wpa/wpa2) after establish */
+     else if (psec_info->dot11AuthAlgrthm == dot11AuthAlgrthm_8021X)
+     {
+         if (param->set_tx == 1)
+@@ -669,7 +581,6 @@
+             {
+                 CFG80211_DBG("set pairwise key, TKIP");
+                 pwdn_info->dot118021XPrivacy = _TKIP_;
+-                /* set mic key */
+                 zt_memcpy(pwdn_info->dot11tkiptxmickey.skey,
+                           &param->key[16], 8);
+                 zt_memcpy(pwdn_info->dot11tkiprxmickey.skey,
+@@ -680,7 +591,6 @@
+             {
+                 CFG80211_DBG("set pairwise key, CCMP");
+                 pwdn_info->dot118021XPrivacy = _AES_;
+-                /* enable hardware encrypt */
+                 zt_sec_ap_set_unicast_key(pnic_info, &pwdn_info->unicast_cam_id,
+                                           pwdn_info->dot118021XPrivacy,
+                                           pwdn_info->mac, pwdn_info->dot118021x_UncstKey.skey);
+@@ -702,6 +612,7 @@
+     return res;
+ }
+ #endif
++
+ static zt_s32 cfg80211_sta_set_encryption(struct net_device *dev,
+         struct cfg80211_crypt *param, zt_u32 param_len)
+ {
+@@ -742,10 +653,10 @@
+         goto exit;
+     }
+ 
+-    if (psec_info->dot11AuthAlgrthm == dot11AuthAlgrthm_8021X) /* 802_1x */
++    if (psec_info->dot11AuthAlgrthm == dot11AuthAlgrthm_8021X)
+     {
+         local_info_st *plocal_info = pnic_info->local_info;
+-        if (plocal_info->work_mode == ZT_INFRA_MODE) /* sta mode */
++        if (plocal_info->work_mode == ZT_INFRA_MODE)
+         {
+             pwdn_info = zt_wdn_find_info(pnic_info,
+                                          zt_wlan_get_cur_bssid(pnic_info));
+@@ -770,21 +681,18 @@
+             zt_mcu_set_sec_cfg(pnic_info,
+                                psec_info->dot11AuthAlgrthm == dot11AuthAlgrthm_8021X ? 0xcf : 0xcc);
+ 
+-            /* PTK: param->u.crypt.key */
+-            if (param->set_tx == 1) /* pairwise key */
++            if (param->set_tx == 1)
+             {
+                 CFG80211_DBG("set unicastkey");
+-                /* KCK PTK0~127 */
+                 zt_memcpy(pwdn_info->dot118021x_UncstKey.skey, param->key,
+                           min_t(zt_u16, param->key_len, 16));
+ 
+-                if (param->alg == WLAN_CIPHER_SUITE_TKIP) /* set mic key */
++                if (param->alg == WLAN_CIPHER_SUITE_TKIP)
+                 {
+-                    /* KEK PTK128~255 */
+                     zt_memcpy(pwdn_info->dot11tkiptxmickey.skey,
+-                              &(param->key[16]), 8); /* PTK128~191 */
++                              &(param->key[16]), 8);
+                     zt_memcpy(pwdn_info->dot11tkiprxmickey.skey,
+-                              &(param->key[24]), 8); /* PTK192~255 */
++                              &(param->key[24]), 8);
+                     psec_info->busetkipkey = zt_true;
+                 }
+                 if (param->alg == WLAN_CIPHER_SUITE_CCMP)
+@@ -795,7 +703,7 @@
+                                                pwdn_info->mac, pwdn_info->dot118021x_UncstKey.skey);
+                 }
+             }
+-            else /* group key */
++            else
+             {
+                 CFG80211_DBG("set groupkey");
+                 zt_memcpy(psec_info->dot118021XGrpKey[param->idx].skey,
+@@ -824,7 +732,6 @@
+                         zt_p2p_nego_timer_set(pnic_info, P2P_EAPOL_NEGO_TIME);
+                     }
+                 }
+-
+             }
+         }
+     }
+@@ -879,7 +786,6 @@
+ }
+ 
+ static zt_s32 _add_key_cb(struct wiphy *wiphy, struct net_device *ndev,
+-/*TODO: android #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 119))*/
+ #if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0))
+                           int link_id,
+ #endif
+@@ -917,9 +823,7 @@
+         goto exit;
+     }
+     zt_memset(param, 0, param_len);
+-
+     zt_memset(param->sta_addr, 0xff, ETH_ALEN);
+-
+     param->alg = params->cipher;
+ 
+     if (mac_addr == NULL || zt_80211_is_bcast_addr(mac_addr))
+@@ -965,11 +869,9 @@
+     }
+ 
+     return res;
+-
+ }
+ 
+ static zt_s32 _get_key_cb(struct wiphy *wiphy, struct net_device *ndev,
+-/*TODO: android #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 119))*/
+ #if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0))
+                           int link_id,
+ #endif
+@@ -994,9 +896,7 @@
+     return 0;
+ }
+ 
+-
+ static zt_s32 _del_key_cb(struct wiphy *wiphy, struct net_device *ndev,
+-/*TODO: android #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 119))*/
+ #if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0))
+                           int link_id,
+ #endif
+@@ -1021,10 +921,8 @@
+     return 0;
+ }
+ 
+-
+ static zt_s32 _set_default_key_cb(struct wiphy *wiphy,
+                                   struct net_device *ndev,
+-/*TODO: android #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 137))*/
+ #if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0))
+                                   int link_id,
+ #endif
+@@ -1045,9 +943,7 @@
+              psec_info->dot11PrivacyAlgrthm == _WEP104_))
+     {
+         psec_info->ndisencryptstatus = zt_ndis802_11Encryption1Enabled;
+-
+         psec_info->dot11PrivacyKeyIndex = key_index;
+-
+         psec_info->dot11PrivacyAlgrthm = _WEP40_;
+         psec_info->dot118021XGrpPrivacy = _WEP40_;
+         if (psec_info->dot11DefKeylen[key_index] == 13)
+@@ -1062,7 +958,6 @@
+     return 0;
+ }
+ 
+-
+ static zt_s32 _cfg80211_get_station(struct wiphy *wiphy,
+                                     struct net_device *ndev,
+ #if (LINUX_VERSION_CODE < KERNEL_VERSION(3, 16, 0))
+@@ -1081,20 +976,17 @@
+     CFG80211_DBG("mac addr: "ZT_MAC_FMT, ZT_MAC_ARG(mac));
+     if (NULL == mac)
+     {
+-        CFG80211_DBG("mac is null");
+         return -ENOENT;
+     }
+     pndev_priv = netdev_priv(ndev);
+     if (NULL == pndev_priv)
+     {
+-        CFG80211_DBG("pndev_priv is null");
+         return -ENOENT;
+     }
+ 
+     pnic_info = pndev_priv->nic;
+     if (NULL == pnic_info)
+     {
+-        CFG80211_DBG("pnic_info is null");
+         return -ENOENT;
+     }
+ 
+@@ -1110,27 +1002,20 @@
+     zt_wlan_get_max_rate(pnic_info, (zt_u8 *)mac, &max_rate);
+ 
+     sinfo->filled = 0;
+-
+     sinfo->filled |= STATION_INFO_SIGNAL;
+     sinfo->signal = translate_percentage_to_dbm(level);
+-
+     sinfo->filled |= STATION_INFO_TX_BITRATE;
+     sinfo->txrate.legacy = max_rate;
+-
+     sinfo->filled |= STATION_INFO_RX_PACKETS;
+     sinfo->rx_packets = pwdn_net_info->wdn_stats.rx_pkts;
+-
+     sinfo->filled |= STATION_INFO_TX_PACKETS;
+     sinfo->tx_packets = pwdn_net_info->wdn_stats.tx_pkts;
+-
+     sinfo->filled |= STATION_INFO_TX_FAILED;
+     sinfo->tx_failed = pwdn_net_info->wdn_stats.tx_drops;
+ 
+     return 0;
+ }
+ 
+-
+-
+ static zt_s32 _cfg80211_change_iface(struct wiphy *wiphy,
+                                      struct net_device *ndev,
+                                      enum nl80211_iftype type,
+@@ -1198,13 +1083,6 @@
+ 
+     ndev->type = ARPHRD_ETHER;
+ 
+-    if (type == NL80211_IFTYPE_MONITOR)
+-    {
+-    }
+-    else if (old_type == NL80211_IFTYPE_MONITOR)
+-    {
+-    }
+-
+     switch (type)
+     {
+ #ifdef CFG_ENABLE_ADHOC_MODE
+@@ -1212,7 +1090,6 @@
+             network_type = ZT_ADHOC_MODE;
+             break;
+ #endif
+-
+         case NL80211_IFTYPE_STATION:
+             network_type = ZT_INFRA_MODE;
+             if (zt_p2p_is_valid(pnic_info))
+@@ -1223,10 +1100,7 @@
+                 {
+                     zt_p2p_set_role(p2p_info, P2P_ROLE_DEVICE);
+                     zt_p2p_set_state(p2p_info, p2p_info->pre_p2p_state);
+-                    CFG80211_INFO("role=%d, p2p_state=%d, pre_p2p_state=%d\n",
+-                                  p2p_info->role, p2p_info->p2p_state, p2p_info->pre_p2p_state);
+                 }
+-
+ #if ((LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 37)) || defined(COMPAT_KERNEL_RELEASE))
+                 if (p2p_info->role == P2P_ROLE_CLIENT)
+                 {
+@@ -1247,7 +1121,6 @@
+                 {
+                     zt_p2p_set_role(p2p_info, P2P_ROLE_GO);
+                 }
+-
+             }
+ #endif
+             zt_mlme_abort(pnic_info);
+@@ -1263,39 +1136,28 @@
+ 
+ #if ((LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 37)) || defined(COMPAT_KERNEL_RELEASE))
+         case NL80211_IFTYPE_P2P_CLIENT:
+-            CFG80211_INFO("NL80211_IFTYPE_P2P_CLIENT");
+             network_type = ZT_INFRA_MODE;
+             if (zt_p2p_is_valid(pnic_info))
+             {
+-                CFG80211_INFO("DRIVER_CFG80211, %s", zt_p2p_role_to_str(p2p_info->role));
+                 if (change && P2P_ROLE_GO == p2p_info->role)
+                 {
+                     zt_p2p_set_role(p2p_info, P2P_ROLE_DEVICE);
+                     zt_p2p_set_state(p2p_info, p2p_info->pre_p2p_state);
+-                    CFG80211_INFO("%s, role=%d, p2p_state=%d, pre_p2p_state=%d\n", __func__,
+-                                  p2p_info->role, p2p_info->p2p_state, p2p_info->pre_p2p_state);
+                 }
+                 zt_p2p_set_role(p2p_info, P2P_ROLE_CLIENT);
+-
+             }
+             break;
+ 
+ #ifdef CFG_ENABLE_AP_MODE
+         case NL80211_IFTYPE_P2P_GO:
+-        {
+-            CFG80211_INFO("NL80211_IFTYPE_P2P_GO, %s", zt_p2p_role_to_str(p2p_info->role));
+             network_type = ZT_MASTER_MODE;
+-
+             if (change && p2p_info->p2p_state != P2P_STATE_NONE)
+             {
+                 zt_p2p_set_role(p2p_info, P2P_ROLE_GO);
+             }
+-
+-        }
+-        break;
++            break;
+ #endif
+ #endif
+-
+         default:
+             CFG80211_ERROR("op type error");
+             return -EPERM;
+@@ -1316,7 +1178,6 @@
+     }
+ #endif
+ 
+-    CFG80211_DBG("mode == %d", type);
+     zt_memset(pnic_info->sec_info, 0, sizeof(sec_info_st));
+     zt_local_cfg_set_work_mode(pnic_info, network_type);
+     zt_mcu_set_op_mode(pnic_info, network_type);
+@@ -1336,7 +1197,6 @@
+     zt_os_api_lock_lock(&pwdev_info->scan_req_lock);
+     if (pwdev_info->pscan_request != NULL)
+     {
+-        LOG_W("[%s]: with scan req", __func__);
+         if (pwdev_info->pscan_request->wiphy == pnic_info->pwiphy)
+         {
+ #if (KERNEL_VERSION(4, 7, 0) <= LINUX_VERSION_CODE)
+@@ -1345,16 +1205,8 @@
+             cfg80211_scan_done(pwdev_info->pscan_request, babort);
+ #endif
+         }
+-        else
+-        {
+-            LOG_W("[%s]: wrong compare", __func__);
+-        }
+         pwdev_info->pscan_request = NULL;
+     }
+-    else
+-    {
+-        LOG_W("[%s]: scan req is NULL", __func__);
+-    }
+     zt_os_api_lock_unlock(&pwdev_info->scan_req_lock);
+ }
+ 
+@@ -1391,7 +1243,6 @@
+     pbuf = zt_kzalloc(MAX_BSSINFO_LEN);
+     if (pbuf == NULL)
+     {
+-        CFG80211_WARN("buffer alloc failed!");
+         return pbss;
+     }
+     zt_memset(pbuf, 0, MAX_BSSINFO_LEN);
+@@ -1399,46 +1250,33 @@
+     frame_len = ZT_OFFSETOF(zt_80211_mgmt_t, beacon) + pscan_que_node->ie_len;
+     if (frame_len > MAX_BSSINFO_LEN)
+     {
+-        CFG80211_WARN("ie_length is too long");
+         goto exit;
+     }
+ 
+-    /**
+-     * make frame
+-     */
+     pframe = (void *)pbuf;
+-    /* frame control */
+     pframe->frame_control = 0;
+-    /* frame type */
+     frame_type = pscan_que_node->frame_type;
+     zt_80211_hdr_type_set(pframe, frame_type);
+-    /* address */
++
+     zt_memcpy(pframe->da,
+               frame_type == ZT_80211_FRM_BEACON ?
+               bc_addr : nic_to_local_addr(pnic_info),
+               ETH_ALEN);
+     zt_memcpy(pframe->sa, pscan_que_node->bssid, ETH_ALEN);
+     zt_memcpy(pframe->bssid, pscan_que_node->bssid, ETH_ALEN);
+-    /* sequence control */
+     pframe->seq_ctrl = 0;
+-    /* element */
++
+     void *tmp_beacon = (zt_s8 *)pframe + ZT_OFFSETOF(zt_80211_mgmt_t, beacon);
+     zt_memcpy(tmp_beacon, pscan_que_node->ies, pscan_que_node->ie_len);
+-    /* timestamp */
+     pframe->beacon.timestamp = zt_cpu_to_le64(cfg80211_get_timestamp_us());
+ 
+-    channel =
+-        ieee80211_get_channel(pwiphy, zt_ch_2_freq((zt_s32)pscan_que_node->channel));
+-    signal_dbm =
+-        translate_percentage_to_dbm(pscan_que_node->signal_strength) *
+-        100; /* mBm (100*dBm) */
++    channel = ieee80211_get_channel(pwiphy, zt_ch_2_freq((zt_s32)pscan_que_node->channel));
++    signal_dbm = translate_percentage_to_dbm(pscan_que_node->signal_strength) * 100;
+     pbss = cfg80211_inform_bss_frame(pwiphy, channel,
+                                      (void *)pframe, frame_len,
+                                      signal_dbm, GFP_ATOMIC);
+     if (unlikely(!pbss))
+     {
+-        CFG80211_WARN("pbss is NULL %s channel %d", pscan_que_node->ssid.data,
+-                      pscan_que_node->channel);
+         goto exit;
+     }
+ 
+@@ -1493,7 +1331,6 @@
+                            ZT_80211_MGMT_CAPAB_IBSS);
+ #endif
+ 
+-
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 9, 0)
+     cfg80211_put_bss(pwiphy, bss);
+ #else
+@@ -1532,15 +1369,12 @@
+     if (bss)
+     {
+         cfg80211_unlink_bss(pwiphy, bss);
+-        CFG80211_INFO("%s(): cfg80211_unlink %s!! () ", __func__,
+-                      pcur_network->ssid.data);
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 9, 0)
+         cfg80211_put_bss(pwiphy, bss);
+ #else
+         cfg80211_put_bss(bss);
+ #endif
+     }
+-    return;
+ }
+ 
+ void zt_cfg80211_ibss_indicate_connect(nic_info_st *pnic_info)
+@@ -1560,7 +1394,6 @@
+ 
+ #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 15, 0))
+     freq = zt_ch_2_freq((zt_s32)pcur_network->channel);
+-    LOG_D("freq = %d", freq);
+ #endif
+     pwdev->iftype = NL80211_IFTYPE_ADHOC;
+ 
+@@ -1572,9 +1405,6 @@
+                     !zt_memcmp(pscan_que_node->ssid.data, pcur_network->ssid.data,
+                                pcur_network->ssid.length))
+             {
+-                CFG80211_DBG("INFORM BSS before event up, ssid %s, ssid %s",
+-                             pscan_que_node->ssid.data,
+-                             pcur_network->ssid.data);
+                 inform_bss(pnic_info, pscan_que_node);
+             }
+         }
+@@ -1633,23 +1463,12 @@
+                     !zt_memcmp(pscan_que_node->ssid.data, pcur_network->ssid.data,
+                                pcur_network->ssid.length))
+             {
+-                CFG80211_DBG("INFORM BSS before event up, ssid %s, ssid %s, bss_ch:%d, scan_ch:%d, bssid:"ZT_MAC_FMT,
+-                             pscan_que_node->ssid.data
+-                             , pcur_network->ssid.data
+-                             , pcur_network->channel
+-                             , pscan_que_node->channel
+-                             , ZT_MAC_ARG(pscan_que_node->bssid)
+-                            );
+                 inform_bss(pnic_info, pscan_que_node);
+             }
+         }
+         zt_wlan_mgmt_scan_que_for_end(scan_que_for_rst);
+     }
+ 
+-    if (!zt_cfg80211_inform_check_bss(pnic_info))
+-    {
+-        CFG80211_INFO("bss not found!!");
+-    }
+     if (zt_p2p_is_valid(pnic_info))
+     {
+         p2p_info_st *p2p_info           = pnic_info->p2p;
+@@ -1658,21 +1477,14 @@
+         zt_p2p_set_state(p2p_info, P2P_STATE_GONEGO_OK);
+         if (p2p_info->go_negoing & ZT_BIT(P2P_INVIT_RESP))
+         {
+-            //p2p_info->go_negoing  = 0;
+             zt_p2p_nego_timer_set(pnic_info, P2P_CONN_NEGO_TIME);
+         }
+         else if (p2p_info->go_negoing & ZT_BIT(P2P_GO_NEGO_CONF))
+         {
+             zt_p2p_nego_timer_set(pnic_info, P2P_CONN_NEGO_TIME);
+         }
+-        CFG80211_DBG("role=%s, p2p_state=%s, pre_p2p_state=%s\n",
+-                     zt_p2p_role_to_str(p2p_info->role),
+-                     zt_p2p_state_to_str(p2p_info->p2p_state),
+-                     zt_p2p_state_to_str(p2p_info->pre_p2p_state));
+-
+     }
+-    CFG80211_DBG("req ie_len:%d, resp ie_len:%d",
+-                 pcur_network->assoc_req.ie_len, pcur_network->assoc_resp.ie_len);
++
+     cfg80211_connect_result(pnic_info->ndev,
+                             pcur_network->mac_addr,
+                             pcur_network->assoc_req.ie,
+@@ -1711,24 +1523,12 @@
+     if (zt_p2p_is_valid(pnic_info))
+     {
+         p2p_info_st *p2p_info = pnic_info->p2p;
+-
+         zt_p2p_set_state(p2p_info, p2p_info->pre_p2p_state);
+-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 37)) || defined(COMPAT_KERNEL_RELEASE)
+-//        if (pwdev->iftype != NL80211_IFTYPE_P2P_CLIENT)
+-#endif
+-        {
+-            zt_p2p_set_role(p2p_info, P2P_ROLE_DEVICE);
+-        }
++        zt_p2p_set_role(p2p_info, P2P_ROLE_DEVICE);
+         zt_p2p_nego_timer_set(pnic_info, P2P_CONN_NEGO_TIME);
+-        CFG80211_DBG("role=%s, p2p_state=%s, pre_p2p_state=%s\n",
+-                     zt_p2p_role_to_str(p2p_info->role), zt_p2p_state_to_str(p2p_info->p2p_state),
+-                     zt_p2p_state_to_str(p2p_info->pre_p2p_state));
+-
+     }
+ 
+ #if LINUX_VERSION_CODE < KERNEL_VERSION(3, 11, 0) || defined(COMPAT_KERNEL_RELEASE)
+-    CFG80211_DBG("pwdev->sme_state(b)=%d\n", pwdev->sme_state);
+-
+     if (pwdev->sme_state == CFG80211_SME_CONNECTING)
+     {
+         cfg80211_connect_result(ndev,
+@@ -1750,14 +1550,10 @@
+         cfg80211_disconnected(ndev, 0, NULL, 0, GFP_ATOMIC);
+ #endif
+     }
+-
+-    CFG80211_DBG("pwdev->sme_state(a)=%d", pwdev->sme_state);
+ #else
+     {
+         zt_bool bConnect;
+         zt_mlme_get_connect(pnic_info, &bConnect);
+-        CFG80211_DBG("call cfg80211_disconnected, reason:%d, local_generite=%d",
+-                     pconn_res->reason_code, pconn_res->local_disconn);
+ 
+         if (bConnect == zt_true)
+         {
+@@ -1789,21 +1585,17 @@
+ #endif
+ }
+ 
+-/* The rescan only occurs after the p2p invitation
+- * process and will not affect other processes.*/
+ #define MAX_RETRY_SCAN (5)
+ 
+ zt_s32 zt_cfg80211_scan_complete(nic_info_st *pnic_info)
+ {
+     zt_wlan_mgmt_scan_que_node_t *pscan_que_node = NULL;
+     zt_wlan_mgmt_scan_que_for_rst_e scan_que_for_rst;
+-
+     struct zt_widev_priv *pwdev_info = pnic_info->widev_priv;
+     struct cfg80211_scan_request *req = pwdev_info->pscan_request;
+ 
+     zt_u8 ch_num = 0;
+     p2p_info_st *p2p_info = NULL;
+-
+     zt_s32 ret = 0;
+     zt_wlan_ssid_t ssids[1];
+     zt_s32 p2p_scan_ssid_found = 0;
+@@ -1814,25 +1606,20 @@
+     if (zt_p2p_is_valid(pnic_info))
+     {
+         p2p_info  = pnic_info->p2p;
+-
+         ch_num = p2p_info->ext_channel_num + req->n_channels;
+ 
+         if (req->ssids != NULL && 0 == zt_memcmp(req->ssids->ssid, "DIRECT-", 7) &&
+             req->ssids[0].ssid_len > 7 && (p2p_info->go_negoing & ZT_BIT(P2P_INVIT_RESP)))
+         {
+-            /* need to check p2p ssid found or not, only after invitation resp */
+             p2p_scan_ssid_search = 1;
+         }
+     }
+-    else{
++    else {
+         ch_num = req->n_channels;
+     }
+ 
+     zt_wlan_mgmt_scan_que_for_begin(pnic_info, pscan_que_node)
+     {
+-        CFG80211_DBG(" pscan_que_node have results");
+-
+-        /* checkout channel */
+         if (ch_num)
+         {
+             zt_u8 i;
+@@ -1862,28 +1649,20 @@
+         }
+ 
+ INFORM_BSS:
+-        /* check p2p ssid */
+         if(p2p_scan_ssid_search && !p2p_scan_ssid_found)
+         {
+             if(0 == zt_memcmp(req->ssids[0].ssid, pscan_que_node->ssid.data, req->ssids[0].ssid_len))
+             {
+-                CFG80211_INFO("[%d] scan_found ssid : %s", pnic_info->ndev_id, pscan_que_node->ssid.data);
+                 p2p_scan_ssid_found = 1;
+                 p2p_info->scan_times = 0;
+             }
+         }
+ 
+-        /* inform bss */
+         inform_bss(pnic_info, pscan_que_node);
+-        CFG80211_DBG("%s"" "ZT_MAC_FMT" %s",
+-                     pscan_que_node->frame_type == ZT_80211_FRM_BEACON ? "BCN " : "PROB",
+-                     ZT_MAC_ARG(pscan_que_node->bssid),
+-                     pscan_que_node->ssid.data);
+     }
+     zt_wlan_mgmt_scan_que_for_end(scan_que_for_rst);
+ 
+     if(p2p_scan_ssid_search && !p2p_scan_ssid_found){
+-        /* if p2p bssid not found, retry scan */
+         if(p2p_info->scan_times < MAX_RETRY_SCAN)
+         {
+             zt_memset(ssids, 0, sizeof(ssids));
+@@ -1894,7 +1673,6 @@
+                                      ZT_MLME_FRAMEWORK_NETLINK);
+ 
+             p2p_info->scan_times++;
+-            CFG80211_WARN("[%d] scan times : %d, ret : %d", pnic_info->ndev_id, p2p_info->scan_times, ret);
+             if(!ret){
+                 return 0;
+             }else{
+@@ -1906,7 +1684,6 @@
+     }
+ 
+     return 1;
+-
+ }
+ 
+ zt_s32 zt_cfg80211_p2p_cb_reg(nic_info_st *pnic_info)
+@@ -1936,8 +1713,6 @@
+     p2p_info = pnic_info->p2p;
+     if (zt_p2p_is_valid(pnic_info))
+     {
+-        CFG80211_INFO("[%d] buddy:%d, nego:0x%x,scan_deny:%d",
+-                      pnic_info->ndev_id, buddy_flag, p2p_info->go_negoing, p2p_info->scan_deny);
+         if (buddy_flag)
+         {
+             if (p2p_info->scan_deny)
+@@ -1949,17 +1724,15 @@
+                 if (0 == p2p_info->nego_timer_flag)
+                 {
+                     p2p_info->nego_timer_flag = 1;
+-
+                 }
+-                return 1;//scan_done = true
++                return 1;
+             }
+-
+         }
+-
+     }
+ 
+     return 0;
+ }
++
+ static zt_s32 _call_scan_cb(struct wiphy *wiphy
+ #if (LINUX_VERSION_CODE < KERNEL_VERSION(3, 6, 0))
+                             , struct net_device *ndev
+@@ -1990,15 +1763,13 @@
+ 
+     if (req == NULL)
+     {
+-        ret = -EINVAL;
+-        return ret;
++        return -EINVAL;
+     }
+ 
+ #if (LINUX_VERSION_CODE < KERNEL_VERSION(3, 6, 0))
+     if (ndev == NULL)
+     {
+-        ret = -EINVAL;
+-        return ret;
++        return -EINVAL;
+     }
+ #endif
+ 
+@@ -2009,9 +1780,6 @@
+     pndev_priv = netdev_priv(ndev);
+     pnic_info = pndev_priv->nic;
+ 
+-    CFG80211_INFO("[%d] mac addr: "ZT_MAC_FMT, pnic_info->ndev_id,
+-                  ZT_MAC_ARG(nic_to_local_addr(pnic_info)));
+-
+     pmlme_info = (mlme_info_t *)pnic_info->mlme_info;
+     pscan_info = pnic_info->scan_info;
+     pwdev_info = pnic_info->widev_priv;
+@@ -2028,20 +1796,16 @@
+                 state == MLME_STATE_ASSOC ||
+                 state == MLME_STATE_SCAN)
+         {
+-            CFG80211_DBG("buddy interface is under linking or scaning!");
+             scan_done = zt_true;
+             goto exit;
+         }
+     }
+ 
+-    LOG_I("this is zdg:: req->ssid:: %s\n", req->ssids);
+-
+     if (req->ssids != NULL && 0 == zt_memcmp(req->ssids->ssid, "DIRECT-", 7)
+             && zt_p2p_get_ie((zt_u8 *) req->ie, req->ie_len, NULL, NULL))
+     {
+         if (req->ssids->ssid_len == 7)
+         {
+-            CFG80211_INFO("abort p2p listen!");
+             scan_done = zt_true;
+             goto exit;
+         }
+@@ -2050,13 +1814,6 @@
+         scan_time_for_one_ch  = 1;
+         scan_time             = 1;
+ 
+-        CFG80211_DBG(" p2p ie_len:%zu", req->ie_len);
+-        for (i = 0; i < req_ch_nums; i++)
+-        {
+-            CFG80211_INFO("[%d] channel[%d]: hw_value[%d]", pnic_info->ndev_id, i,
+-                          req->channels[i]->hw_value);
+-        }
+-
+         if (req->n_channels == 3 && req->channels[0]->hw_value == 1
+                 && req->channels[1]->hw_value == 6 && req->channels[2]->hw_value == 11)
+         {
+@@ -2078,17 +1835,14 @@
+                 goto exit;
+             }
+             zt_p2p_set_pre_state(p2p_info, p2p_info->p2p_state);
+-
+         }
+         else
+         {
+-            /*register callback function*/
+             zt_cfg80211_p2p_cb_reg(pnic_info);
+             zt_p2p_enable(pnic_info, P2P_ROLE_DEVICE);
+         }
+ 
+         zt_p2p_scan_entry(pnic_info, social_channel, (zt_u8 *)req->ie, req->ie_len);
+-
+     }
+     else if (cfg80211_p2p_nego_ctl_scan(pnic_info->buddy_nic, req_ch_nums, zt_true))
+     {
+@@ -2096,9 +1850,6 @@
+         goto exit;
+     }
+ 
+-    /* if traffic busy been detected, the current scan request should ignore,
+-    with the purpose of no interference traffic, unless timeout occurs from
+-    the start of traffic busy is detected. */
+     zt_mlme_get_connect(pndev_priv->nic, &bConnect);
+     if (bConnect == zt_true)
+     {
+@@ -2117,11 +1868,8 @@
+             {
+                 zt_timer_restart(&timer);
+             }
+-            //            else
+-            {
+-                scan_done = zt_true;
+-                goto exit;
+-            }
++            scan_done = zt_true;
++            goto exit;
+         }
+         else if (on_check)
+         {
+@@ -2149,7 +1897,6 @@
+         goto exit;
+     }
+ 
+-    CFG80211_DBG("req->n_ssids:%d", req->n_ssids);
+     zt_memset(ssids, 0, sizeof(ssids));
+     if (req->ssids)
+     {
+@@ -2157,7 +1904,6 @@
+         {
+             if (req->ssids[i].ssid_len)
+             {
+-                CFG80211_DBG("ssid = %s, ssid_len = %d", req->ssids[i].ssid, req->ssids[i].ssid_len);
+                 zt_memcpy(ssids[i].data, req->ssids[i].ssid, req->ssids[i].ssid_len);
+                 ssids[i].length = req->ssids[i].ssid_len;
+             }
+@@ -2169,29 +1915,23 @@
+         ssid_num = i;
+     }
+ 
+-    CFG80211_DBG("n_channels:%d", req->n_channels);
+     zt_memset(current_ch, 0, sizeof(current_ch));
+     if (req->channels[0])
+     {
+         for (i = 0; i < req->n_channels && i < ZT_ARRAY_SIZE(current_ch); i++)
+         {
+-            CFG80211_DBG("hw_value:%u flags:0x%08x",
+-                         req->channels[i]->hw_value, req->channels[i]->flags);
+             current_ch[i] = req->channels[i]->hw_value;
+         }
+ 
+         if (zt_p2p_is_valid(pnic_info))
+         {
+             zt_u8 j = 0;
+-
+             p2p_info_st *p2p_info = pnic_info->p2p;
+             if (ext_channel)
+             {
+-                /* after invitation response, gc will scan in all channel */
+                 for(j = 0; j < 13; j++)
+                 {
+                     p2p_info->social_channel[j] = j + 1;
+-
+                 }
+                 p2p_info->ext_channel_num = 13;
+             }
+@@ -2257,8 +1997,11 @@
+     return ret;
+ }
+ 
+-
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0))
++static zt_s32 _set_wiphy_params(struct wiphy *wiphy, int link_id, zt_u32 changed)
++#else
+ static zt_s32 _set_wiphy_params(struct wiphy *wiphy, zt_u32 changed)
++#endif
+ {
+     CFG80211_DBG();
+ 
+@@ -2275,7 +2018,6 @@
+         case NL80211_AUTHTYPE_AUTOMATIC:
+             psec_info->dot11AuthAlgrthm = dot11AuthAlgrthm_Auto;
+             break;
+-
+         case NL80211_AUTHTYPE_OPEN_SYSTEM:
+             psec_info->dot11AuthAlgrthm = dot11AuthAlgrthm_Open;
+             if (psec_info->ndisauthtype > zt_ndis802_11AuthModeWPA)
+@@ -2323,7 +2065,6 @@
+             sec_status = zt_ndis802_11Encryption3Enabled;
+             break;
+         default:
+-            CFG80211_DBG("Unsupported cipher: 0x%x, ucast: %d", nl_cipher, ucast);
+             return -ENOTSUPP;
+     }
+ 
+@@ -2349,9 +2090,6 @@
+     wep_key_idx = sme->key_idx;
+     wep_key_len = sme->key_len;
+ 
+-    CFG80211_DBG("wep_key_idx = %d, wep_key_len = %d, ", wep_key_idx, wep_key_len);
+-    CFG80211_ARRAY((zt_u8 *)sme->key, wep_key_len);
+-
+     if (sme->key_idx > ZT_80211_WEP_KEYS)
+     {
+         res = -EINVAL;
+@@ -2427,7 +2165,6 @@
+ 
+         if (ielen < ZT_RSN_HD_LEN)
+         {
+-            CFG80211_WARN("Ie len too short(%d)", (zt_u16)ielen);
+             res = -EINVAL;
+             goto exit;
+         }
+@@ -2459,12 +2196,10 @@
+             case ZT_CIPHER_SUITE_TKIP:
+                 sec_info->dot118021XGrpPrivacy = _TKIP_;
+                 sec_info->ndisencryptstatus = zt_ndis802_11Encryption2Enabled;
+-                CFG80211_DBG("dot118021XGrpPrivacy=_TKIP_");
+                 break;
+             case ZT_CIPHER_SUITE_CCMP:
+                 sec_info->dot118021XGrpPrivacy = _AES_;
+                 sec_info->ndisencryptstatus = zt_ndis802_11Encryption3Enabled;
+-                CFG80211_DBG("dot118021XGrpPrivacy=_AES_");
+                 break;
+         }
+ 
+@@ -2475,12 +2210,10 @@
+             case ZT_CIPHER_SUITE_TKIP:
+                 sec_info->dot11PrivacyAlgrthm = _TKIP_;
+                 sec_info->ndisencryptstatus = zt_ndis802_11Encryption2Enabled;
+-                CFG80211_DBG("dot11PrivacyAlgrthm=_TKIP_");
+                 break;
+             case ZT_CIPHER_SUITE_CCMP:
+                 sec_info->dot11PrivacyAlgrthm = _AES_;
+                 sec_info->ndisencryptstatus = zt_ndis802_11Encryption3Enabled;
+-                CFG80211_DBG("dot11PrivacyAlgrthm=_AES_");
+                 break;
+         }
+ 
+@@ -2490,7 +2223,6 @@
+             if (eid == ZT_80211_MGMT_EID_VENDOR_SPECIFIC &&
+                     !zt_memcmp(&buf[cnt + 2], wps_oui, 4))
+             {
+-                CFG80211_DBG("SET WPS_IE");
+                 sec_info->wps_ie_len = ZT_MIN(buf[cnt + 1] + 2, 512);
+                 zt_memcpy(sec_info->wps_ie, &buf[cnt], sec_info->wps_ie_len);
+                 cnt += buf[cnt + 1] + 2;
+@@ -2503,7 +2235,6 @@
+         }
+ 
+         zt_mcu_set_on_rcr_am(pnic_info, zt_false);
+-        //        zt_mcu_set_hw_invalid_all(pnic_info);
+     }
+ 
+ exit :
+@@ -2551,12 +2282,8 @@
+         return -1;
+     }
+ #endif
+-    CFG80211_DBG("privacy=%d, key=%p, key_len=%d, key_idx=%d, auth_type=%d, wpa:%d",
+-                 sme->privacy, sme->key, sme->key_len, sme->key_idx, sme->auth_type,
+-                 sme->crypto.wpa_versions);
+ 
+ #ifdef CFG_ENABLE_AP_MODE
+-    /* connection request no work best on master mode  */
+     if (zt_local_cfg_get_work_mode(pnic_info) == ZT_MASTER_MODE)
+     {
+         res = -EPERM;
+@@ -2570,7 +2297,6 @@
+         zt_assoc_stop(pnic_info->buddy_nic);
+     }
+ 
+-    /* if buddy interfase is under linking, ignore current request */
+     if (pnic_info->buddy_nic)
+     {
+         mlme_state_e state;
+@@ -2579,13 +2305,11 @@
+                 state == MLME_STATE_AUTH ||
+                 state == MLME_STATE_ASSOC)
+         {
+-            CFG80211_WARN("buddy interface is under linking !");
+             res = -EPERM;
+             goto exit;
+         }
+     }
+ 
+-    /* if connection is on building, ignore current request */
+     {
+         mlme_state_e state;
+         zt_mlme_get_state(pnic_info, &state);
+@@ -2596,7 +2320,6 @@
+         }
+     }
+ 
+-    /* checkout if system scanning, abort scan process with timeout */
+     if (zt_scan_wait_done(pnic_info, zt_true, 200))
+     {
+         res = -EBUSY;
+@@ -2606,19 +2329,15 @@
+     zt_memset(pcur_network->ssid.data, 0, ZT_80211_MAX_SSID_LEN + 1);
+     zt_memcpy(pcur_network->ssid.data, sme->ssid, sme->ssid_len);
+     pcur_network->ssid.length = sme->ssid_len;
+-    CFG80211_DBG("ssid = %s, len = %d",
+-                 pcur_network->ssid.data, pcur_network->ssid.length);
+ 
+     if (!sme->bssid || zt_80211_is_bcast_addr(sme->bssid) ||
+             zt_80211_is_zero_addr(sme->bssid) || zt_80211_is_mcast_addr(sme->bssid))
+     {
+-        CFG80211_DBG("[WLAN_IW] : [sa_data is boradcast or zero ether]");
+         res = -EPERM;
+         goto exit;
+     }
+     zt_wlan_set_cur_bssid(pnic_info, (zt_u8 *)sme->bssid);
+ 
+-    /* cleap up sec info */
+     zt_memset(pnic_info->sec_info, 0x0, sizeof(sec_info_st));
+ 
+     psec_info->ndisencryptstatus    = zt_ndis802_11EncryptionDisabled;
+@@ -2628,7 +2347,6 @@
+     psec_info->ndisauthtype         = zt_ndis802_11AuthModeOpen;
+     psec_info->busetkipkey          = zt_false;
+ 
+-    /* parse auth mode */
+     wpa_version = sme->crypto.wpa_versions;
+     if (!wpa_version)
+     {
+@@ -2641,14 +2359,12 @@
+ 
+     cfg80211_set_auth_type(psec_info, sme->auth_type);
+ 
+-    /* parse ie */
+     res = cfg80211_set_wpa_ie(pnic_info, (zt_u8 *)sme->ie, sme->ie_len);
+     if (res < 0)
+     {
+         goto exit;
+     }
+ 
+-    /* parse crypto for wep */
+     if (sme->key_len > 0 && sme->key)
+     {
+         res = cfg80211_set_wep_key(pnic_info, sme);
+@@ -2659,7 +2375,6 @@
+         }
+     }
+ 
+-    /* parse crypto for wpa */
+     if (sme->crypto.n_ciphers_pairwise)
+     {
+         res = cfg80211_set_cipher(psec_info, sme->crypto.ciphers_pairwise[0], zt_true);
+@@ -2682,18 +2397,14 @@
+         {
+             psec_info->dot11AuthAlgrthm = dot11AuthAlgrthm_8021X;
+         }
+-        else
+-        {
+-            CFG80211_DBG("Invalid key mgmt: 0x%x", key_mgmt);
+-        }
+     }
+ 
+     if (zt_p2p_is_valid(pnic_info))
+     {
+         zt_p2p_connect_entry(pnic_info, (zt_u8 *)sme->ie, sme->ie_len);
+-		zt_memset(pcur_network->ssid.data, 0, ZT_80211_MAX_SSID_LEN + 1);
+-		zt_memcpy(pcur_network->ssid.data, "DIRECT-", 7);
+-		pcur_network->ssid.length = 7;
++        zt_memset(pcur_network->ssid.data, 0, ZT_80211_MAX_SSID_LEN + 1);
++        zt_memcpy(pcur_network->ssid.data, "DIRECT-", 7);
++        pcur_network->ssid.length = 7;
+     }
+ 
+     {
+@@ -2712,16 +2423,12 @@
+     return res;
+ }
+ 
+-
+ static zt_s32 _disconnect_cb(struct wiphy *wiphy, struct net_device *ndev,
+                              zt_u16 reason_code)
+ {
+     ndev_priv_st *pndev_priv = netdev_priv(ndev);
+     nic_info_st *pnic_info = pndev_priv->nic;
+ 
+-    CFG80211_INFO("mac addr: "ZT_MAC_FMT" reason_code=%d",
+-                  ZT_MAC_ARG(nic_to_local_addr(pnic_info)), reason_code);
+-
+     if (pnic_info->is_driver_critical)
+     {
+         CFG80211_WARN("driver enter crital");
+@@ -2762,11 +2469,9 @@
+ #elif (LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 31))
+     pch = (struct ieee80211_channel *)(params->channel);
+ #endif
+-    CFG80211_DBG("mac addr: "ZT_MAC_FMT, ZT_MAC_ARG(nic_to_local_addr(pnic_info)));
+ 
+     if (pnic_info->is_driver_critical)
+     {
+-        CFG80211_WARN("driver enter crital");
+         return -EINVAL;
+     }
+ 
+@@ -2830,7 +2535,6 @@
+         zt_memset(&ssid, 0, sizeof(zt_wlan_ssid_t));
+         ssid.length = params->ssid_len;
+         zt_memcpy(ssid.data, (zt_u8 *)params->ssid, ssid.length);
+-        CFG80211_INFO("start connect to: %s", ssid.data);
+ 
+         zt_wlan_set_cur_ssid(pnic_info, &ssid);
+         zt_scan_wait_done(pnic_info, zt_true, 1000);
+@@ -2846,7 +2550,6 @@
+     return res;
+ }
+ 
+-
+ static zt_s32 _leave_ibss_cb(struct wiphy *wiphy, struct net_device *ndev)
+ {
+ #ifdef CFG_ENABLE_ADHOC_MODE
+@@ -2856,7 +2559,6 @@
+     enum nl80211_iftype old_iftype;
+     zt_bool bConnected;
+ 
+-    CFG80211_DBG("mac addr: "ZT_MAC_FMT, ZT_MAC_ARG(nic_to_local_addr(pnic_info)));
+     old_iftype = pwdev->iftype;
+     zt_mlme_get_connect(pnic_info, &bConnected);
+ 
+@@ -2865,23 +2567,27 @@
+         zt_adhoc_leave_ibss_msg_send(pnic_info);
+         zt_yield();
+         pwdev->iftype = NL80211_IFTYPE_STATION;
+-        /* free message queue in wdn_info */
+-        CFG80211_DBG("free resource");
+         zt_adhoc_flush_all_resource(pnic_info, ZT_INFRA_MODE);
+-
+     }
+ #endif
+     return 0;
+ }
+ 
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0))
+ static zt_s32 _call_set_txpower(struct wiphy *wiphy,
+-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 8, 0))
+                                 struct wireless_dev *wdev,
+-#endif
+-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 36)) || defined(COMPAT_KERNEL_RELEASE)
+-                                enum nl80211_tx_power_setting type, zt_s32 mbm)
++                                int link_id,
++                                enum nl80211_tx_power_setting type,
++                                zt_s32 mbm)
++#elif (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 8, 0))
++static zt_s32 _call_set_txpower(struct wiphy *wiphy,
++                                struct wireless_dev *wdev,
++                                enum nl80211_tx_power_setting type,
++                                zt_s32 mbm)
+ #else
+-                                enum tx_power_setting type, zt_s32 dbm)
++static zt_s32 _call_set_txpower(struct wiphy *wiphy,
++                                enum tx_power_setting type,
++                                zt_s32 mbm)
+ #endif
+ {
+     CFG80211_DBG();
+@@ -2889,12 +2595,20 @@
+     return 0;
+ }
+ 
+-
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0))
+ static zt_s32 _call_get_txpower(struct wiphy *wiphy,
+-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 8, 0))
+                                 struct wireless_dev *wdev,
+-#endif
++                                int link_id,
++                                unsigned int flags,
++                                int *dbm)
++#elif (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 8, 0))
++static zt_s32 _call_get_txpower(struct wiphy *wiphy,
++                                struct wireless_dev *wdev,
++                                zt_s32 *dbm)
++#else
++static zt_s32 _call_get_txpower(struct wiphy *wiphy,
+                                 zt_s32 *dbm)
++#endif
+ {
+     CFG80211_DBG();
+ 
+@@ -2903,7 +2617,6 @@
+     return 0;
+ }
+ 
+-
+ static zt_s32 _cfg80211_set_power_mgmt(struct wiphy *wiphy,
+                                        struct net_device *ndev, bool enabled, zt_s32 timeout)
+ {
+@@ -2911,15 +2624,11 @@
+     nic_info_st *pnic_info = pndev_priv->nic;
+     struct  zt_widev_priv *pwdev_info = pnic_info->widev_priv;
+ 
+-    CFG80211_DBG("mac addr: "ZT_MAC_FMT, ZT_MAC_ARG(nic_to_local_addr(pnic_info)));
+-    CFG80211_DBG("power management %s", enabled ? "enabled" : "disabled");
+-
+     pwdev_info->power_mgmt = enabled;
+ 
+     return 0;
+ }
+ 
+-
+ static zt_s32 _set_pmksa_cb(struct wiphy *wiphy,
+                             struct net_device *ndev,
+                             struct cfg80211_pmksa *pmksa)
+@@ -2931,8 +2640,6 @@
+     zt_u8 strZeroMacAddress[ETH_ALEN] = { 0x00 };
+     zt_bool bConnect;
+ 
+-    CFG80211_DBG("mac addr: "ZT_MAC_FMT, ZT_MAC_ARG(nic_to_local_addr(pnic_info)));
+-
+     if (zt_memcmp((zt_u8 *) pmksa->bssid, strZeroMacAddress, ETH_ALEN) == zt_true)
+     {
+         return -EINVAL;
+@@ -2942,11 +2649,9 @@
+ 
+     if (bConnect == zt_false)
+     {
+-        CFG80211_DBG(" not set pmksa cause not in linked state");
+         return -EINVAL;
+     }
+ 
+-
+     blInserted = zt_false;
+ 
+     for (index = 0; index < NUM_PMKID_CACHE; index++)
+@@ -2954,8 +2659,6 @@
+         if (zt_memcmp(psec_info->PMKIDList[index].Bssid, (zt_u8 *) pmksa->bssid,
+                       ETH_ALEN) == zt_true)
+         {
+-            CFG80211_DBG(" BSSID exists in the PMKList.");
+-
+             zt_memcpy(psec_info->PMKIDList[index].PMKID,
+                       (zt_u8 *) pmksa->pmkid, WLAN_PMKID_LEN);
+             psec_info->PMKIDList[index].bUsed = zt_true;
+@@ -2967,9 +2670,6 @@
+ 
+     if (!blInserted)
+     {
+-        CFG80211_DBG(" Use the new entry index = %d for this PMKID.",
+-                     psec_info->PMKIDIndex);
+-
+         zt_memcpy(psec_info->PMKIDList[psec_info->PMKIDIndex].Bssid,
+                   (zt_u8 *) pmksa->bssid, ETH_ALEN);
+         zt_memcpy(psec_info->PMKIDList[psec_info->PMKIDIndex].PMKID,
+@@ -2986,7 +2686,6 @@
+     return 0;
+ }
+ 
+-
+ static zt_s32 _del_pmksa_cb(struct wiphy *wiphy,
+                             struct net_device *ndev,
+                             struct cfg80211_pmksa *pmksa)
+@@ -2996,8 +2695,6 @@
+     sec_info_st *psec_info = pnic_info->sec_info;
+     zt_u8 index, bMatched = zt_false;
+ 
+-    CFG80211_DBG("mac addr: "ZT_MAC_FMT, ZT_MAC_ARG(nic_to_local_addr(pnic_info)));
+-
+     for (index = 0; index < NUM_PMKID_CACHE; index++)
+     {
+         if (zt_memcmp(psec_info->PMKIDList[index].Bssid, (zt_u8 *) pmksa->bssid,
+@@ -3007,7 +2704,6 @@
+             zt_memset(psec_info->PMKIDList[index].PMKID, 0x00, WLAN_PMKID_LEN);
+             psec_info->PMKIDList[index].bUsed = zt_false;
+             bMatched = zt_true;
+-            CFG80211_DBG(" clear id:%hhu", index);
+             break;
+         }
+     }
+@@ -3020,7 +2716,6 @@
+     return 0;
+ }
+ 
+-
+ static zt_s32 _flush_pmksa_cb(struct wiphy *wiphy,
+                               struct net_device *ndev)
+ {
+@@ -3028,8 +2723,6 @@
+     nic_info_st *pnic_info = pndev_priv->nic;
+     sec_info_st *psec_info = pnic_info->sec_info;
+ 
+-    CFG80211_DBG("mac addr: "ZT_MAC_FMT, ZT_MAC_ARG(nic_to_local_addr(pnic_info)));
+-
+     zt_memset(&psec_info->PMKIDList[0], 0x00,
+               sizeof(SEC_PMKID_LIST) * NUM_PMKID_CACHE);
+     psec_info->PMKIDIndex = 0;
+@@ -3037,20 +2730,23 @@
+     return 0;
+ }
+ 
+-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 6, 0))
+-static zt_s32 _set_monitor_channel(struct wiphy *wiphy
+-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 8, 0))
+-                                   , struct cfg80211_chan_def *chandef
+-#else
+-                                   , struct ieee80211_channel *chan, enum nl80211_channel_type channel_type
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 8, 0))
++static zt_s32 _set_monitor_channel(struct wiphy *wiphy,
++                                   struct net_device *dev,
++                                   struct cfg80211_chan_def *chandef)
++#elif (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 8, 0))
++static zt_s32 _set_monitor_channel(struct wiphy *wiphy,
++                                   struct cfg80211_chan_def *chandef)
++#elif (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 6, 0))
++static zt_s32 _set_monitor_channel(struct wiphy *wiphy,
++                                   struct ieee80211_channel *chan,
++                                   enum nl80211_channel_type channel_type)
+ #endif
+-                                  )
+ {
++    CFG80211_DBG();
+ 
+     return 0;
+ }
+-#endif
+-
+ 
+ static zt_s32 _cfg80211_Mgmt_Tx(struct wiphy *wiphy,
+ #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 6, 0))
+@@ -3117,11 +2813,8 @@
+     wdev = ndev_to_wdev(ndev);
+ #endif
+ 
+-    CFG80211_DBG("mac addr: "ZT_MAC_FMT, ZT_MAC_ARG(nic_to_local_addr(pnic_info)));
+-
+     if (pnic_info->is_driver_critical)
+     {
+-        CFG80211_WARN("driver enter crital");
+         return -EINVAL;
+     }
+ 
+@@ -3131,10 +2824,8 @@
+     }
+     tx_ch = (zt_u8)ieee80211_frequency_to_channel(chan->center_freq);
+ 
+-    /* cookie generation */
+     *cookie = (zt_ptr) buf;
+ 
+-    /* indicate ack before issue frame to avoid racing with rsp frame */
+ #if (LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 37)) || defined(COMPAT_KERNEL_RELEASE)
+ #if (LINUX_VERSION_CODE < KERNEL_VERSION(3, 6, 0))
+     cfg80211_mgmt_tx_status(ndev, *cookie, buf, len, ack, GFP_KERNEL);
+@@ -3150,7 +2841,6 @@
+     if (IEEE80211_STYPE_PROBE_RESP == frame_styp)
+     {
+         wait_ack = 0;
+-        CFG80211_INFO("IEEE80211_STYPE_PROBE_RESP");
+ #ifdef CONFIG_LPS
+         if (ZT_RETURN_FAIL == zt_lps_wakeup(pnic_info, LPS_CTRL_SCAN, 0))
+         {
+@@ -3161,13 +2851,8 @@
+ 
+     if (zt_p2p_is_valid(pnic_info))
+     {
+-        CFG80211_DBG("ch=%d", tx_ch);
+         zt_p2p_tx_action_process(pnic_info, (zt_u8 *)buf, len, tx_ch, wait_ack);
+     }
+-    else
+-    {
+-        CFG80211_DBG("need to do for not p2p");
+-    }
+     return 0;
+ }
+ 
+@@ -3204,18 +2889,11 @@
+ {
+     struct net_device *ndev = pnic_info->ndev;
+     struct wireless_dev *pwdev = pnic_info->pwidev;
+-#if defined(ZT_USE_CFG80211_STA_EVENT) || defined(COMPAT_KERNEL_RELEASE)
+-#else
+-    zt_wlan_mgmt_info_t *pwlan_info = pnic_info->wlan_mgmt_info;
+-    zt_wlan_network_t *pcur_network = &pwlan_info->cur_network;
+-    zt_s32 freq;
+-    zt_u32 channel;
+-#endif
++
+     CFG80211_DBG();
+ 
+     if (pwdev->wiphy == NULL)
+     {
+-        CFG80211_WARN("wiphy is null!");
+         return;
+     }
+ 
+@@ -3236,22 +2914,7 @@
+         sinfo.filled = STATION_INFO_ASSOC_REQ_IES;
+         sinfo.assoc_req_ies = passoc_req + WLAN_HDR_A3_LEN + ie_offset;
+         sinfo.assoc_req_ies_len = assoc_req_len - WLAN_HDR_A3_LEN - ie_offset;
+-        cfg80211_new_sta(ndev, GetAddr2Ptr(passoc_req), &sinfo, GFP_ATOMIC);
+-#else
+-        channel = pcur_network->channel;
+-        freq = zt_ch_2_freq(channel);
+-
+-#ifdef COMPAT_KERNEL_RELEASE
+-        zt_cfg80211_rx_mgmt(pnic_info, freq, 0, passoc_req, assoc_req_len, GFP_ATOMIC);
+-#elif (LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 37)) && !defined(CONFIG_CFG80211_FORCE_COMPATIBLE_2_6_37_UNDER)
+-        zt_cfg80211_rx_mgmt(pnic_info, freq, 0, passoc_req, assoc_req_len, GFP_ATOMIC);
+-#else
+-        pwdev->iftype = NL80211_IFTYPE_STATION;
+-        CFG80211_DBG("iftype=%d before call cfg80211_send_rx_assoc()", pwdev->iftype);
+-        zt_cfg80211_send_rx_assoc(pnic_info, NULL, passoc_req, assoc_req_len);
+-        CFG80211_DBG("iftype=%d after call cfg80211_send_rx_assoc()", pwdev->iftype);
+-        pwdev->iftype = NL80211_IFTYPE_AP;
+-#endif
++        cfg80211_new_sta(ZT_STA_EVT_DEV(ndev), GetAddr2Ptr(passoc_req), &sinfo, GFP_ATOMIC);
+ #endif
+     }
+ }
+@@ -3260,96 +2923,34 @@
+                                       wdn_net_info_st *pwdn_info)
+ {
+     struct net_device *ndev = pnic_info->ndev;
+-#if defined(ZT_USE_CFG80211_STA_EVENT) || defined(COMPAT_KERNEL_RELEASE)
+-#else
+-    zt_wlan_mgmt_info_t *pwlan_info = pnic_info->wlan_mgmt_info;
+-    zt_wlan_network_t *pcur_network = &pwlan_info->cur_network;
+-    zt_u8 mgmt_buf[128] = { 0 };
+-    zt_u16 *frame_ctrl;
+-    struct wl_ieee80211_hdr *pwlanhdr;
+-    zt_s32 freq;
+-    zt_u32 channel;
+-    zt_u8 *pmgmt_frame;
+-    zt_u16 frame_len;
+-    zt_u16 reason;
+-#endif
++
+     CFG80211_DBG();
+ #ifdef CFG_ENABLE_AP_MODE
+     pwdn_info->state = E_WDN_AP_STATE_READY;
+ #endif
+ #if defined(ZT_USE_CFG80211_STA_EVENT) || defined(COMPAT_KERNEL_RELEASE)
+-    cfg80211_del_sta(ndev, pwdn_info->mac, GFP_ATOMIC);
+-#else
+-    channel = pcur_network->channel;
+-    freq = zt_ch_2_freq(channel);
+-    reason = pwdn_info->reason_code;
+-    pmgmt_frame = mgmt_buf;
+-    pwlanhdr = (struct wl_ieee80211_hdr *)pmgmt_frame;
+-
+-    frame_ctrl = &(pwlanhdr->frame_ctl);
+-    *(frame_ctrl) = 0;
+-
+-    zt_memcpy(pwlanhdr->addr1, pwdn_info->mac, ZT_80211_MAC_ADDR_LEN);
+-    zt_memcpy(pwlanhdr->addr2, nic_to_local_addr(pnic_info), ZT_80211_MAC_ADDR_LEN);
+-    zt_memcpy(pwlanhdr->addr3, zt_wlan_get_cur_bssid(pnic_info),
+-              ZT_80211_MAC_ADDR_LEN);
+-
+-    SetSeqNum(pwlanhdr, pwdn_info->mgmt_seq);
+-    pwdn_info->mgmt_seq++;
+-    SetFrameSubType(pmgmt_frame, WIFI_DEAUTH);
+-
+-    pmgmt_frame += sizeof(struct wl_ieee80211_hdr_3addr);
+-    frame_len = sizeof(struct wl_ieee80211_hdr_3addr);
+-
+-    reason = zt_cpu_to_le16(reason);
+-    pmgmt_frame = zt_80211_set_fixed_ie(pmgmt_frame, _RSON_CODE_, (zt_u8 *)&reason,
+-                                        &frame_len);
+-
+-#ifdef COMPAT_KERNEL_RELEASE
+-    zt_cfg80211_rx_mgmt(pnic_info, freq, 0, mgmt_buf, frame_len, GFP_ATOMIC);
+-#elif (LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 37)) && !defined(CONFIG_CFG80211_FORCE_COMPATIBLE_2_6_37_UNDER)
+-    zt_cfg80211_rx_mgmt(pnic_info, freq, 0, mgmt_buf, frame_len, GFP_ATOMIC);
+-#else
+-    cfg80211_send_disassoc(ndev, mgmt_buf, frame_len);
+-#endif
++    cfg80211_del_sta(ZT_STA_EVT_DEV(ndev), pwdn_info->mac, GFP_ATOMIC);
+ #endif
+ }
+ 
+ #ifdef CFG_ENABLE_AP_MODE
+ static zt_s32  monitor_open(struct net_device *ndev)
+ {
+-    CFG80211_DBG();
+-
+     return 0;
+ }
+ 
+ static zt_s32  monitor_close(struct net_device *ndev)
+ {
+-    CFG80211_DBG();
+-
+     return 0;
+ }
+ 
+ static zt_s32  monitor_xmit_entry(struct sk_buff *skb, struct net_device *ndev)
+ {
+-    CFG80211_DBG();
+-
+     return 0;
+ }
+ 
+-#if (LINUX_VERSION_CODE < KERNEL_VERSION(3, 2, 0))
+-static void  monitor_set_multicast_list(struct net_device *ndev)
+-{
+-    CFG80211_DBG();
+-
+-    return ;
+-}
+-#endif
+-
+ static zt_s32  monitor_set_mac_address(struct net_device *ndev, void *addr)
+ {
+-    CFG80211_DBG();
+-
+     return 0;
+ }
+ 
+@@ -3359,9 +2960,6 @@
+     .ndo_open = monitor_open,
+     .ndo_stop = monitor_close,
+     .ndo_start_xmit = monitor_xmit_entry,
+-#if (LINUX_VERSION_CODE < KERNEL_VERSION(3, 2, 0))
+-    .ndo_set_multicast_list = monitor_set_multicast_list,
+-#endif
+     .ndo_set_mac_address = monitor_set_mac_address,
+ };
+ #endif
+@@ -3377,24 +2975,18 @@
+ 
+     if (!name)
+     {
+-        CFG80211_WARN(" without specific name");
+-        ret = -EINVAL;
+-        goto out;
++        return -EINVAL;
+     }
+ 
+     if (pwdev_priv->pmon_ndev)
+     {
+-        CFG80211_DBG("monitor interface exist");
+-        ret = -EBUSY;
+-        goto out;
++        return -EBUSY;
+     }
+ 
+     mon_ndev = alloc_etherdev(sizeof(struct zt_netdev_priv));
+     if (!mon_ndev)
+     {
+-        CFG80211_WARN(" allocate ndev fail");
+-        ret = -ENOMEM;
+-        goto out;
++        return -ENOMEM;
+     }
+ 
+     mon_ndev->type = ARPHRD_IEEE80211_RADIOTAP;
+@@ -3422,7 +3014,6 @@
+     mon_wdev = (struct wireless_dev *)zt_kzalloc(sizeof(struct wireless_dev));
+     if (!mon_wdev)
+     {
+-        CFG80211_WARN(" allocate mon_wdev fail");
+         ret = -ENOMEM;
+         goto out;
+     }
+@@ -3445,13 +3036,11 @@
+     if (ret && mon_wdev)
+     {
+         zt_kfree(mon_wdev);
+-        mon_wdev = NULL;
+     }
+-
+     if (ret && mon_ndev)
+     {
+         free_netdev(mon_ndev);
+-        *ndev = mon_ndev = NULL;
++        *ndev = NULL;
+     }
+ 
+     return ret;
+@@ -3483,9 +3072,6 @@
+     struct net_device *ndev = NULL;
+     nic_info_st *pnic_info = *((nic_info_st **)wiphy_priv(wiphy));
+ 
+-    CFG80211_DBG("mac addr: "ZT_MAC_FMT, ZT_MAC_ARG(nic_to_local_addr(pnic_info)));
+-    CFG80211_DBG("wiphy:%s, name:%s, type:%d\n", wiphy_name(wiphy), name, type);
+-
+     switch (type)
+     {
+         case NL80211_IFTYPE_ADHOC:
+@@ -3497,14 +3083,12 @@
+         case NL80211_IFTYPE_MONITOR:
+             ret = add_monitor(pnic_info, (zt_s8 *)name, &ndev);
+             break;
+-
+ #if (LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 37)) || defined(COMPAT_KERNEL_RELEASE)
+         case NL80211_IFTYPE_P2P_CLIENT:
+ #endif
+         case NL80211_IFTYPE_STATION:
+             ret = -ENODEV;
+             break;
+-
+ #if (LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 37)) || defined(COMPAT_KERNEL_RELEASE)
+         case NL80211_IFTYPE_P2P_GO:
+ #endif
+@@ -3513,7 +3097,6 @@
+             break;
+         default:
+             ret = -ENODEV;
+-            CFG80211_WARN("Unsupported interface type\n");
+             break;
+     }
+ 
+@@ -3542,31 +3125,23 @@
+     struct zt_widev_priv *pwdev;
+     ndev_priv_st *pndev_priv;
+ 
+-    CFG80211_DBG();
+-
+     if (!ndev)
+     {
+-        ret = -EINVAL;
+-        goto exit;
++        return -EINVAL;
+     }
+ 
+     pndev_priv = netdev_priv(ndev);
+     pnic_info = pndev_priv->nic;
+-    CFG80211_DBG("mac addr: "ZT_MAC_FMT, ZT_MAC_ARG(nic_to_local_addr(pnic_info)));
+     pwdev = pnic_info->widev_priv;
+ 
+-
+-
+     unregister_netdevice(ndev);
+ 
+     if (ndev == pwdev->pmon_ndev)
+     {
+         pwdev->pmon_ndev = NULL;
+         pwdev->ifname_mon[0] = '\0';
+-        CFG80211_DBG(" remove monitor interface");
+     }
+ 
+-exit:
+     return ret;
+ }
+ 
+@@ -3574,19 +3149,13 @@
+                          size_t head_len,
+                          const zt_u8 *tail, size_t tail_len)
+ {
+-
+     zt_s32 ret = 0;
+     zt_u8 *pbuf = NULL;
+     uint len = 0;
+     uint wps_ielen = 0;
+-    //zt_u8 *p2p_ie;
+     zt_u32 p2p_ielen = 0;
+-    zt_u8 got_p2p_ie = zt_false;
+     p2p_info_st *p2p_info = pnic_info->p2p;
+ 
+-
+-    CFG80211_DBG("beacon_head_len=%zu, beacon_tail_len=%zu", head_len, tail_len);
+-
+     if (zt_mlme_check_mode(pnic_info, ZT_MASTER_MODE) != zt_true)
+     {
+         return -EINVAL;
+@@ -3615,24 +3184,17 @@
+         if (zt_p2p_get_ie(pbuf + _FIXED_IE_LENGTH_, len - _FIXED_IE_LENGTH_, NULL,
+                           &p2p_ielen))
+         {
+-            got_p2p_ie = zt_true;
+-            CFG80211_INFO("got p2p_ie, len = %d\n", p2p_ielen);
+-
+             if (p2p_info->p2p_state == P2P_STATE_NONE)
+             {
+-                CFG80211_INFO("Enable P2P for the first time\n");
+                 zt_p2p_enable(pnic_info, P2P_ROLE_GO);
+             }
+             else
+             {
+-                CFG80211_INFO("enter GO mode , p2p_ielen=%d\n", p2p_ielen);
+                 zt_p2p_set_role(p2p_info, P2P_ROLE_GO);
+                 zt_p2p_set_state(p2p_info, P2P_STATE_GONEGO_OK);
+                 p2p_info->intent = 15;
+             }
+-
+         }
+-
+     }
+ 
+     if (zt_ap_set_beacon(pnic_info, pbuf, len, ZT_MLME_FRAMEWORK_NETLINK) == 0)
+@@ -3648,38 +3210,30 @@
+ 
+     return ret;
+ }
++
+ #if (LINUX_VERSION_CODE < KERNEL_VERSION(3, 4, 0)) && !defined(COMPAT_KERNEL_RELEASE)
+ static zt_s32 add_beacon_cb(struct wiphy *wiphy, struct net_device *ndev,
+                             struct beacon_parameters *info)
+ {
+-    zt_s32 ret = 0;
+     ndev_priv_st *pndev_priv = netdev_priv(ndev);
+     nic_info_st *pnic_info = pndev_priv->nic;
+-
+-    CFG80211_DBG("mac addr: "ZT_MAC_FMT, ZT_MAC_ARG(nic_to_local_addr(pnic_info)));
++    zt_s32 ret;
+ 
+     if (pnic_info->is_driver_critical)
+     {
+-        CFG80211_WARN("driver enter crital");
+         return -EINVAL;
+     }
+ 
+-    ret =
+-        add_beacon(pnic_info, info->head, info->head_len, info->tail,
+-                   info->tail_len);
+-
++    ret = add_beacon(pnic_info, info->head, info->head_len, info->tail,
++                     info->tail_len);
+     zt_ap_work_start(pnic_info);
+-
+     return ret;
+ }
+ 
+ static zt_s32 set_beacon_cb(struct wiphy *wiphy, struct net_device *ndev,
+                             struct beacon_parameters *info)
+ {
+-    CFG80211_DBG();
+-
+     add_beacon_cb(wiphy, ndev, info);
+-
+     return 0;
+ }
+ 
+@@ -3688,8 +3242,6 @@
+     ndev_priv_st *pndev_priv = netdev_priv(ndev);
+     nic_info_st *pnic_info = pndev_priv->nic;
+ 
+-    CFG80211_DBG("mac addr: "ZT_MAC_FMT, ZT_MAC_ARG(nic_to_local_addr(pnic_info)));
+-
+     if (zt_ap_work_stop(pnic_info))
+     {
+         return -EINVAL;
+@@ -3707,12 +3259,8 @@
+     zt_wlan_mgmt_info_t *pwlan_info = pnic_info->wlan_mgmt_info;
+     zt_wlan_network_t *pcur_network = &pwlan_info->cur_network;
+ 
+-    CFG80211_DBG(" hidden_ssid:%d, auth_type:%d\n", settings->hidden_ssid,
+-                 settings->auth_type);
+-
+     if (pnic_info->is_driver_critical)
+     {
+-        CFG80211_WARN("driver enter crital");
+         return -EINVAL;
+     }
+ 
+@@ -3721,10 +3269,9 @@
+         settings->auth_type == NL80211_AUTHTYPE_SHARED_KEY ? dot11AuthAlgrthm_Shared :
+         dot11AuthAlgrthm_Auto;
+ 
+-    ret =
+-        add_beacon(pnic_info, settings->beacon.head,
+-                   settings->beacon.head_len, settings->beacon.tail,
+-                   settings->beacon.tail_len);
++    ret = add_beacon(pnic_info, settings->beacon.head,
++                     settings->beacon.head_len, settings->beacon.tail,
++                     settings->beacon.tail_len);
+ 
+     pcur_network->hidden_ssid_mode = (zt_80211_hidden_ssid_e)settings->hidden_ssid;
+     if (settings->ssid && settings->ssid_len)
+@@ -3741,31 +3288,25 @@
+ #if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 7, 0))
+                                      struct cfg80211_ap_update *info
+ #else
+-				     struct cfg80211_beacon_data *info
++                                     struct cfg80211_beacon_data *info
+ #endif
+ )
+ {
+-    zt_s32 ret = 0;
+     ndev_priv_st *pndev_priv = netdev_priv(ndev);
+     nic_info_st *pnic_info = pndev_priv->nic;
+ 
+-    CFG80211_DBG("mac addr: "ZT_MAC_FMT, ZT_MAC_ARG(nic_to_local_addr(pnic_info)));
+-
+-    ret =
+-        add_beacon(pnic_info, 
++    return add_beacon(pnic_info, 
+ #if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 7, 0))
+-		   info->beacon.head, info->beacon.head_len, info->beacon.tail,
+-                   info->beacon.tail_len
++                      info->beacon.head, info->beacon.head_len, info->beacon.tail,
++                      info->beacon.tail_len
+ #else
+-		   info->head, info->head_len, info->tail,
+-                   info->tail_len
++                      info->head, info->head_len, info->tail,
++                      info->tail_len
+ #endif
+-	);
+-    return ret;
++    );
+ }
+ 
+ static zt_s32 cfg80211_stop_ap(struct wiphy *wiphy, struct net_device *ndev
+-/*TODO: android #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 137))*/
+ #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 2))
+     ,unsigned int link_id
+ #endif
+@@ -3774,8 +3315,6 @@
+     ndev_priv_st *pndev_priv = netdev_priv(ndev);
+     nic_info_st *pnic_info = pndev_priv->nic;
+ 
+-    CFG80211_DBG("mac addr: "ZT_MAC_FMT, ZT_MAC_ARG(nic_to_local_addr(pnic_info)));
+-
+     if (zt_ap_work_stop(pnic_info))
+     {
+         return -EINVAL;
+@@ -3783,6 +3322,7 @@
+     return 0;
+ }
+ #endif
++
+ static zt_s32 add_station(struct wiphy *wiphy,
+                           struct net_device *ndev,
+ #if (LINUX_VERSION_CODE < KERNEL_VERSION(3, 16, 0))
+@@ -3792,10 +3332,7 @@
+ #endif
+                           struct station_parameters *params)
+ {
+-    zt_s32 ret = 0;
+-    CFG80211_DBG();
+-
+-    return ret;
++    return 0;
+ }
+ 
+ static zt_s32 del_station(struct wiphy *wiphy,
+@@ -3815,8 +3352,6 @@
+     ndev_priv_st *pndev_priv = netdev_priv(ndev);
+     nic_info_st *pnic_info = pndev_priv->nic;
+ 
+-    CFG80211_DBG("mac addr: "ZT_MAC_FMT, ZT_MAC_ARG(nic_to_local_addr(pnic_info)));
+-
+ #if (LINUX_VERSION_CODE < KERNEL_VERSION(3, 19, 0))
+     target_mac = mac;
+     reason_code = ZT_80211_REASON_PREV_AUTH_NOT_VALID;
+@@ -3824,16 +3359,14 @@
+     target_mac = params->mac;
+     reason_code = params->reason_code;
+ #endif
++
+     if (zt_mlme_check_mode(pnic_info, ZT_MASTER_MODE) != zt_true)
+     {
+-        CFG80211_WARN("sys mode is not WIFI_AP_STATE");
+         return -EINVAL;
+     }
+ 
+     if (!target_mac)
+     {
+-        CFG80211_DBG("flush all sta, and cam_entry");
+-
+         if (zt_ap_deauth_all_sta(pnic_info, reason_code))
+         {
+             return -EINVAL;
+@@ -3841,8 +3374,6 @@
+         return 0;
+     }
+ 
+-    CFG80211_DBG("free sta macaddr =" ZT_MAC_FMT, ZT_MAC_ARG(target_mac));
+-
+     if (zt_80211_is_bcast_addr(target_mac))
+     {
+         return -EINVAL;
+@@ -3851,11 +3382,9 @@
+     pwdn_info = zt_wdn_find_info(pnic_info, (zt_u8 *)target_mac);
+     if (pwdn_info != NULL)
+     {
+-        CFG80211_DBG("wdn state:%d", pwdn_info->state);
+         if (pwdn_info->state > E_WDN_AP_STATE_ASSOC)
+         {
+             pwdn_info->reason_code = reason_code;
+-            CFG80211_DBG("free psta, aid=%d\n", pwdn_info->aid);
+             if (zt_mlme_check_mode(pnic_info, ZT_MASTER_MODE) == zt_true)
+             {
+                 if (pwdn_info->mode == ZT_MASTER_MODE)
+@@ -3864,23 +3393,16 @@
+                                    ZT_AP_MSG_TAG_DEAUTH_FRAME, NULL, 0);
+                 }
+             }
+-            CFG80211_INFO("wdn_remove :"ZT_MAC_FMT, ZT_MAC_ARG(target_mac));
+             if (zt_p2p_is_valid(pnic_info))
+             {
+                 if (pwdn_info->is_p2p_device && 1 >= zt_wdn_get_cnt(pnic_info))
+                 {
+-                    CFG80211_INFO("p2p restart");
+                     zt_p2p_cannel_remain_on_channel(pnic_info, 1);
+                     zt_p2p_enable(pnic_info, P2P_ROLE_DEVICE);
+                 }
+             }
+-
+         }
+     }
+-    else
+-    {
+-        CFG80211_DBG("the wdn has never been added");
+-    }
+ 
+     return 0;
+ }
+@@ -3894,30 +3416,21 @@
+ #endif
+                              struct station_parameters *params)
+ {
+-    CFG80211_DBG("mac addr:"ZT_MAC_FMT, ZT_MAC_ARG(mac));
+-    CFG80211_DBG("aid:%d", params->aid);
+-
+     return 0;
+ }
+ 
+-
+ static zt_s32 dump_station(struct wiphy *wiphy,
+                            struct net_device *ndev, zt_s32 idx, zt_u8 *mac,
+                            struct station_info *sinfo)
+ {
+-
+     zt_s32 ret = 0;
+     ndev_priv_st *pndev_priv = netdev_priv(ndev);
+     nic_info_st *pnic_info = pndev_priv->nic;
+-
+     wdn_net_info_st *pwdn_info = NULL;
+-    CFG80211_DBG("mac addr: "ZT_MAC_FMT, ZT_MAC_ARG(nic_to_local_addr(pnic_info)));
+ 
+     pwdn_info = zt_wdn_find_info_by_id(pnic_info, (zt_u8)idx);
+-
+     if (pwdn_info == NULL)
+     {
+-        CFG80211_DBG("Station is not found\n");
+         ret = -ENOENT;
+         goto exit;
+     }
+@@ -3932,8 +3445,6 @@
+ static zt_s32 change_bss(struct wiphy *wiphy, struct net_device *ndev,
+                          struct bss_parameters *params)
+ {
+-    CFG80211_DBG();
+-
+     return 0;
+ }
+ 
+@@ -3950,11 +3461,8 @@
+     zt_s32 chan_width = CHANNEL_WIDTH_20;
+     nic_info_st *pnic_info = *((nic_info_st **)wiphy_priv(wiphy));
+ 
+-    CFG80211_DBG();
+-
+     if (pnic_info->is_driver_critical)
+     {
+-        CFG80211_WARN("driver enter crital");
+         return -EINVAL;
+     }
+ 
+@@ -3980,32 +3488,22 @@
+     }
+ 
+     zt_hw_info_set_channel_bw(pnic_info, chan_target, chan_width, chan_offset);
+-
+     return 0;
+ }
+-
+-#endif
+ #endif
+ 
+-
+-
+ #if defined(CONFIG_PNO_SUPPORT) && (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 0, 0))
+ static zt_s32 _sched_scan_start(struct wiphy *wiphy,
+                                 struct net_device *dev,
+                                 struct cfg80211_sched_scan_request
+                                 *request)
+ {
+-    CFG80211_DBG();
+-
+     return 0;
+ }
+ 
+-
+ static zt_s32 _sched_scan_stop(struct wiphy *wiphy,
+                                struct net_device *dev)
+ {
+-    CFG80211_DBG();
+-
+     return 0;
+ }
+ #endif
+@@ -4019,28 +3517,18 @@
+ #endif
+         struct ieee80211_channel *channel,
+ #if (LINUX_VERSION_CODE < KERNEL_VERSION(3, 8, 0))
+-        enum nl80211_channel_type
+-        channel_type,
++        enum nl80211_channel_type channel_type,
+ #endif
+         zt_u32 duration, zt_u64 *cookie)
+ {
+ #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 6, 0))
+     struct net_device *ndev = wdev->netdev;
+ #endif
+-
+     zt_u8 remain_ch = (zt_u8) ieee80211_frequency_to_channel(channel->center_freq);
+-
+     struct cfg80211_wifidirect_info *pcfg80211_wdinfo;
+     ndev_priv_st *pndev_priv;
+     p2p_info_st *p2p_info;
+     nic_info_st *pnic_info;
+-    zt_u8 is_p2p_find = zt_false;
+-
+-    CFG80211_DBG("start");
+-#ifndef CONFIG_RADIO_WORK
+-#define WL_ROCH_DURATION_ENLARGE
+-#define WL_ROCH_BACK_OP
+-#endif
+ 
+     if (ndev == NULL)
+     {
+@@ -4054,20 +3542,17 @@
+ 
+     if (pnic_info->is_driver_critical)
+     {
+-        CFG80211_WARN("driver enter crital");
+         return -EINVAL;
+     }
+ 
+     if (!zt_p2p_is_valid(pnic_info))
+     {
+-        /*register callback function*/
+         zt_cfg80211_p2p_cb_reg(pnic_info);
+         zt_p2p_enable(pnic_info, P2P_ROLE_DEVICE);
+     }
+ 
+     {
+         zt_bool bConnect = zt_false;
+-
+         zt_mlme_get_connect(pndev_priv->nic, &bConnect);
+         if (bConnect == zt_true)
+             return 0;
+@@ -4077,30 +3562,17 @@
+ 
+     if (p2p_info && p2p_info->is_ro_ch)
+     {
+-        CFG80211_INFO("it is already remain on channel");
+         zt_p2p_cannel_remain_on_channel(pnic_info, 1);
+     }
+-    is_p2p_find = (duration < (p2p_info->ext_listen_interval)) ? zt_true : zt_false;
+     *cookie = atomic_inc_return(&pcfg80211_wdinfo->ro_ch_cookie_gen);
+-    CFG80211_INFO("[%d] mac addr: "ZT_MAC_FMT", cookie:%llx, remain_ch:%d, duration=%d, nego:0x%x",
+-                  pnic_info->ndev_id, ZT_MAC_ARG(nic_to_local_addr(pnic_info)), *cookie, remain_ch, duration, p2p_info->go_negoing);
+     zt_memcpy(&pcfg80211_wdinfo->remain_on_ch_channel, channel, sizeof(struct ieee80211_channel));
+ #if (LINUX_VERSION_CODE < KERNEL_VERSION(3, 8, 0))
+     pcfg80211_wdinfo->remain_on_ch_type = channel_type;
+ #endif
+     pcfg80211_wdinfo->remain_on_ch_cookie = *cookie;
+-
+-#if 0
+-    while (0 != duration && duration < 400)
+-    {
+-        duration = duration * 3;
+-    }
+-#endif
+     pcfg80211_wdinfo->duration = duration;
+     if (zt_false == zt_p2p_is_valid(pnic_info))
+     {
+-        CFG80211_DBG("[%d] mac addr: "ZT_MAC_FMT ", not support p2p",
+-                     pnic_info->ndev_id, ZT_MAC_ARG(nic_to_local_addr(pnic_info)));
+         return 0;
+     }
+ 
+@@ -4117,9 +3589,7 @@
+         p2p_info->scb.ready_on_channel(pnic_info, NULL, 0);
+     }
+     zt_p2p_remain_on_channel(pnic_info);
+-    CFG80211_INFO("end");
+     return 0;
+-
+ }
+ 
+ static zt_s32 cfg80211_cancel_remain_on_channel_cb(struct wiphy *wiphy,
+@@ -4133,15 +3603,14 @@
+ #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 6, 0))
+     struct net_device *ndev = wdev->netdev;
+ #endif
+-
+     p2p_info_st *p2p_info   = NULL;
+     ndev_priv_st *pndev_priv = NULL;
+     nic_info_st *pnic_info   = NULL;
+-    pndev_priv = netdev_priv(ndev);
+ 
++    pndev_priv = netdev_priv(ndev);
+     pnic_info = pndev_priv->nic;
+     p2p_info = pnic_info->p2p;
+-    CFG80211_DBG("mac addr: "ZT_MAC_FMT, ZT_MAC_ARG(nic_to_local_addr(pnic_info)));
++
+     if (ndev == NULL)
+     {
+         return -EINVAL;
+@@ -4149,14 +3618,11 @@
+ 
+     if (pnic_info->is_driver_critical)
+     {
+-        CFG80211_WARN("driver enter crital");
+         return -EINVAL;
+     }
+ 
+     if (zt_false == zt_p2p_is_valid(pnic_info))
+     {
+-        CFG80211_DBG("[%d] mac addr: "ZT_MAC_FMT ", not support p2p",
+-                     pnic_info->ndev_id, ZT_MAC_ARG(nic_to_local_addr(pnic_info)));
+         return 0;
+     }
+ 
+@@ -4165,62 +3631,213 @@
+         return 0;
+     }
+ 
+-    //zt_os_api_timer_unreg(&p2p_info->remain_ch_timer);
+-
+-    CFG80211_INFO("cookie:0x%llx~ 0x%llx, nego:0x%x\n",
+-                  cookie, pndev_priv->cfg80211_wifidirect.remain_on_ch_cookie,
+-                  p2p_info->go_negoing);
+     zt_p2p_cannel_remain_on_channel(pnic_info, 1);
+-    CFG80211_DBG("end");
+     return 0;
++}
++#endif
++
++/*
++ * ---------------------------------------------------------------------------
++ * cfg80211_ops compatibility shims
++ * ---------------------------------------------------------------------------
++ * Kernel 7.0 changed eight cfg80211_ops callbacks from taking
++ * "struct net_device *" to "struct wireless_dev *". Verified against the
++ * real headers of both kernels we target:
++ *
++ *   6.12.107+deb13 (the t630):  add_key/get_key/del_key/get_station/
++ *                               add_station/del_station/change_station/
++ *                               dump_station  all take net_device *
++ *   7.1.5          (this box):  the same eight take wireless_dev *
++ *
++ * The implementations below all expect a net_device (they call
++ * netdev_priv() on it), so on 7.x we interpose thin wrappers that
++ * translate wdev -> wdev->netdev. Without this the kernel hands the
++ * driver a wireless_dev *, netdev_priv() reads past the wrong struct,
++ * and the first key installation during a WPA2 handshake oopses --
++ * i.e. it dies exactly at connect time.
++ *
++ * Note this must NOT be gated on the 6.9.0 boundary some forks use:
++ * 6.12.107 still uses the old signatures, so a 6.9 gate breaks Debian 13.
++ */
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0))
++
++#define ZT_WDEV_TO_NDEV(_wdev)                                  \
++    ({                                                          \
++        struct net_device *__nd =                               \
++            (_wdev) ? (_wdev)->netdev : NULL;                   \
++        __nd;                                                   \
++    })
++
++static zt_s32 _zt_w_add_key(struct wiphy *wiphy, struct wireless_dev *wdev,
++                            int link_id, zt_u8 key_index, bool pairwise,
++                            const zt_u8 *mac_addr,
++                            struct key_params *params)
++{
++    struct net_device *ndev = ZT_WDEV_TO_NDEV(wdev);
++    if (!ndev)
++    {
++        return -EINVAL;
++    }
++    return _add_key_cb(wiphy, ndev, link_id, key_index, pairwise, mac_addr,
++                       params);
++}
++
++static zt_s32 _zt_w_get_key(struct wiphy *wiphy, struct wireless_dev *wdev,
++                            int link_id, zt_u8 key_index, bool pairwise,
++                            const zt_u8 *mac_addr, void *cookie,
++                            void (*callback)(void *cookie,
++                                             struct key_params *))
++{
++    struct net_device *ndev = ZT_WDEV_TO_NDEV(wdev);
++    if (!ndev)
++    {
++        return -EINVAL;
++    }
++    return _get_key_cb(wiphy, ndev, link_id, key_index, pairwise, mac_addr,
++                       cookie, callback);
++}
++
++static zt_s32 _zt_w_del_key(struct wiphy *wiphy, struct wireless_dev *wdev,
++                            int link_id, zt_u8 key_index, bool pairwise,
++                            const zt_u8 *mac_addr)
++{
++    struct net_device *ndev = ZT_WDEV_TO_NDEV(wdev);
++    if (!ndev)
++    {
++        return -EINVAL;
++    }
++    return _del_key_cb(wiphy, ndev, link_id, key_index, pairwise, mac_addr);
++}
+ 
++static zt_s32 _zt_w_get_station(struct wiphy *wiphy,
++                                struct wireless_dev *wdev,
++                                const zt_u8 *mac,
++                                struct station_info *sinfo)
++{
++    struct net_device *ndev = ZT_WDEV_TO_NDEV(wdev);
++    if (!ndev)
++    {
++        return -EINVAL;
++    }
++    return _cfg80211_get_station(wiphy, ndev, mac, sinfo);
++}
++
++static zt_s32 _zt_w_add_station(struct wiphy *wiphy,
++                                struct wireless_dev *wdev,
++                                const zt_u8 *mac,
++                                struct station_parameters *params)
++{
++    struct net_device *ndev = ZT_WDEV_TO_NDEV(wdev);
++    if (!ndev)
++    {
++        return -EINVAL;
++    }
++    return add_station(wiphy, ndev, mac, params);
++}
++
++static zt_s32 _zt_w_change_station(struct wiphy *wiphy,
++                                   struct wireless_dev *wdev,
++                                   const zt_u8 *mac,
++                                   struct station_parameters *params)
++{
++    struct net_device *ndev = ZT_WDEV_TO_NDEV(wdev);
++    if (!ndev)
++    {
++        return -EINVAL;
++    }
++    return change_station(wiphy, ndev, mac, params);
+ }
++
++static zt_s32 _zt_w_del_station(struct wiphy *wiphy,
++                                struct wireless_dev *wdev,
++                                struct station_del_parameters *params)
++{
++    struct net_device *ndev = ZT_WDEV_TO_NDEV(wdev);
++    if (!ndev)
++    {
++        return -EINVAL;
++    }
++    return del_station(wiphy, ndev, params);
++}
++
++static zt_s32 _zt_w_dump_station(struct wiphy *wiphy,
++                                 struct wireless_dev *wdev, zt_s32 idx,
++                                 zt_u8 *mac, struct station_info *sinfo)
++{
++    struct net_device *ndev = ZT_WDEV_TO_NDEV(wdev);
++    if (!ndev)
++    {
++        return -EINVAL;
++    }
++    return dump_station(wiphy, ndev, idx, mac, sinfo);
++}
++
++#define ZT_OPS_ADD_KEY          _zt_w_add_key
++#define ZT_OPS_GET_KEY          _zt_w_get_key
++#define ZT_OPS_DEL_KEY          _zt_w_del_key
++#define ZT_OPS_GET_STATION      _zt_w_get_station
++#define ZT_OPS_ADD_STATION      _zt_w_add_station
++#define ZT_OPS_CHANGE_STATION   _zt_w_change_station
++#define ZT_OPS_DEL_STATION      _zt_w_del_station
++#define ZT_OPS_DUMP_STATION     _zt_w_dump_station
++
++#else /* < 7.0.0: the implementations already match the kernel */
++
++#define ZT_OPS_ADD_KEY          _add_key_cb
++#define ZT_OPS_GET_KEY          _get_key_cb
++#define ZT_OPS_DEL_KEY          _del_key_cb
++#define ZT_OPS_GET_STATION      _cfg80211_get_station
++#define ZT_OPS_ADD_STATION      add_station
++#define ZT_OPS_CHANGE_STATION   change_station
++#define ZT_OPS_DEL_STATION      del_station
++#define ZT_OPS_DUMP_STATION     dump_station
++
+ #endif
+ 
+ static struct cfg80211_ops zt_cfg80211_ops =
+ {
+     .change_virtual_intf = _cfg80211_change_iface,
+ 
+-    .add_key = _add_key_cb,
+-    .get_key = _get_key_cb, //
+-    .del_key = _del_key_cb,
++    .add_key = ZT_OPS_ADD_KEY,
++    .get_key = ZT_OPS_GET_KEY,
++    .del_key = ZT_OPS_DEL_KEY,
+     .set_default_key = _set_default_key_cb,
+ 
+-    .get_station = _cfg80211_get_station,
++    .get_station = ZT_OPS_GET_STATION,
+     .scan = _call_scan_cb,
+     .set_wiphy_params = _set_wiphy_params,
+     .connect = _connect_cb,
+     .disconnect = _disconnect_cb,
+ 
+-    .join_ibss = _join_ibss_cb, //
+-    .leave_ibss = _leave_ibss_cb, //
++    .join_ibss = _join_ibss_cb,
++    .leave_ibss = _leave_ibss_cb,
+ 
+     .set_tx_power = _call_set_txpower,
+     .get_tx_power = _call_get_txpower,
+-    .set_power_mgmt = _cfg80211_set_power_mgmt, //
++    .set_power_mgmt = _cfg80211_set_power_mgmt,
+ 
+-    .set_pmksa = _set_pmksa_cb, //
+-    .del_pmksa = _del_pmksa_cb, //
+-    .flush_pmksa = _flush_pmksa_cb, //
++    .set_pmksa = _set_pmksa_cb,
++    .del_pmksa = _del_pmksa_cb,
++    .flush_pmksa = _flush_pmksa_cb,
+ 
+ #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 6, 0))
+-    .set_monitor_channel = _set_monitor_channel, //
++    .set_monitor_channel = _set_monitor_channel,
+ #endif
+ 
+ #if (LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 37)) || defined(COMPAT_KERNEL_RELEASE)
+-    .mgmt_tx = _cfg80211_Mgmt_Tx, //
++    .mgmt_tx = _cfg80211_Mgmt_Tx,
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)
+     .update_mgmt_frame_registrations = mgmt_frame_register,
+ #else
+-    .mgmt_frame_register = mgmt_frame_register, //
++    .mgmt_frame_register = mgmt_frame_register,
+ #endif
+-#elif  (LINUX_VERSION_CODE>=KERNEL_VERSION(2, 6, 34) && LINUX_VERSION_CODE<=KERNEL_VERSION(2, 6, 35))
++#elif (LINUX_VERSION_CODE>=KERNEL_VERSION(2, 6, 34) && LINUX_VERSION_CODE<=KERNEL_VERSION(2, 6, 35))
+     .action = _cfg80211_Mgmt_Tx,
+ #endif
+ 
+ #if defined(CONFIG_PNO_SUPPORT) && (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 0, 0))
+-    .sched_scan_start = _sched_scan_start, //
+-    .sched_scan_stop = _sched_scan_stop, //
++    .sched_scan_start = _sched_scan_start,
++    .sched_scan_stop = _sched_scan_stop,
+ #endif
+ 
+ #ifdef CFG_ENABLE_AP_MODE
+@@ -4237,10 +3854,10 @@
+     .stop_ap = cfg80211_stop_ap,
+ #endif
+ 
+-    .add_station = add_station,
+-    .del_station = del_station,
+-    .change_station = change_station,
+-    .dump_station = dump_station,
++    .add_station = ZT_OPS_ADD_STATION,
++    .del_station = ZT_OPS_DEL_STATION,
++    .change_station = ZT_OPS_CHANGE_STATION,
++    .dump_station = ZT_OPS_DUMP_STATION,
+     .change_bss = change_bss,
+ #if (LINUX_VERSION_CODE < KERNEL_VERSION(3, 6, 0))
+     .set_channel = set_channel,
+@@ -4251,7 +3868,6 @@
+     .remain_on_channel = cfg80211_remain_on_channel_cb,
+     .cancel_remain_on_channel = cfg80211_cancel_remain_on_channel_cb,
+ #endif
+-
+ };
+ 
+ zt_s32 zt_cfg80211_alloc(nic_info_st *pnic_info)
+@@ -4266,27 +3882,22 @@
+     pnic_info->pwiphy = NULL;
+     pnic_info->pwidev = NULL;
+ 
+-    /* alloc wireless phy object */
+     pwiphy = wiphy_new(&zt_cfg80211_ops, sizeof(hif_node_st *));
+     if (NULL == pwiphy)
+     {
+-        CFG80211_WARN("allocate wiphy device fail !!");
+         return -1;
+     }
+     if (wiphy_cfg(pwiphy))
+     {
+-        CFG80211_WARN("wiphy config fail !!");
+         return -2;
+     }
+     set_wiphy_dev(pwiphy, pnic_info->dev);
+     set_wiphy_pirv(pwiphy, pnic_info);
+     pnic_info->pwiphy = pwiphy;
+ 
+-    /* alloc wireless device */
+     pwidev = (void *)zt_kzalloc(sizeof(struct wireless_dev));
+     if (NULL == pwidev)
+     {
+-        CFG80211_INFO("allocate wireless device fail !!");
+         return -3;
+     }
+     pwidev->wiphy           = pwiphy;
+@@ -4295,7 +3906,6 @@
+     pwidev->netdev          = pndev;
+     pnic_info->pwidev       = pwidev;
+ 
+-    /* initialize wireless private data */
+     pwidev_priv                 = pnic_info->widev_priv;
+     pwidev_priv->pwidev         = pwidev;
+     pwidev_priv->pmon_ndev      = NULL;
+@@ -4304,8 +3914,7 @@
+     pwidev_priv->pscan_request  = NULL;
+     zt_os_api_lock_init(&pwidev_priv->scan_req_lock, ZT_LOCK_TYPE_BH);
+     pwidev_priv->power_mgmt     = zt_false;
+-
+-    pwidev_priv->bandroid_scan = zt_true;
++    pwidev_priv->bandroid_scan  = zt_true;
+ 
+     atomic_set(&pwidev_priv->ro_ch_to, 1);
+     atomic_set(&pwidev_priv->switch_ch_to, 1);
+@@ -4316,7 +3925,6 @@
+ zt_s32 zt_cfg80211_reg(struct wiphy *pwiphy)
+ {
+     CFG80211_DBG();
+-
+     return wiphy_register(pwiphy);
+ }
+ 
+@@ -4327,29 +3935,24 @@
+ 
+     if (NULL == pnic_info)
+     {
+-        CFG80211_WARN("pnic_info null");
+         return;
+     }
+-    CFG80211_DBG("ndev_id:%d", pnic_info->ndev_id);
+ 
+     zt_scan_wait_done(pnic_info, zt_true, 400);
+ 
+     pwidev = pnic_info->pwidev;
+     pndev = pnic_info->ndev;
+ 
+-/*TODO:android #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0))  */
+ #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 2))
+     if (pwidev->valid_links && pwidev->links[0].client.current_bss)
+     {
+         zt_u8 is_local_disc = 1;
+-        CFG80211_INFO("clear current_bss by cfg80211_disconnected");
+         cfg80211_disconnected(pndev, 0, NULL, 0, is_local_disc, GFP_ATOMIC);
+     }
+ #elif (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 2, 0))
+     if (pwidev->current_bss)
+     {
+         zt_u8 is_local_disc = 1;
+-        CFG80211_INFO("clear current_bss by cfg80211_disconnected");
+         cfg80211_disconnected(pndev, 0, NULL, 0, is_local_disc, GFP_ATOMIC);
+     }
+ #elif ((LINUX_VERSION_CODE >= KERNEL_VERSION(3, 11, 0)) && \
+@@ -4357,7 +3960,6 @@
+     defined(COMPAT_KERNEL_RELEASE)
+     if (pwidev->current_bss)
+     {
+-        CFG80211_INFO("clear current_bss by cfg80211_disconnected");
+         cfg80211_disconnected(pndev, 0, NULL, 0, GFP_ATOMIC);
+     }
+ #endif
+@@ -4366,16 +3968,13 @@
+ zt_s32 zt_cfg80211_remain_on_channel_expired(void *nic, void *param,
+         zt_u32 param_len)
+ {
+-
+     nic_info_st *pnic_info  = NULL;
+     ndev_priv_st *ndev_priv = NULL;
+     cfg80211_wifidirect_info_st *cfg_wfdirect_info = NULL;
+     zt_widev_priv_t *pwidev = NULL;
+-    CFG80211_DBG("start");
+ 
+     if (NULL == nic)
+     {
+-        LOG_E("[%s, %d] input param is null", __func__, __LINE__);
+         return ZT_RETURN_FAIL;
+     }
+ 
+@@ -4383,13 +3982,12 @@
+     ndev_priv = netdev_priv(pnic_info->ndev);
+     if (NULL == ndev_priv)
+     {
+-        LOG_E("[%s, %d] input param is null", __func__, __LINE__);
+         return ZT_RETURN_FAIL;
+     }
+ 
+     cfg_wfdirect_info = &ndev_priv->cfg80211_wifidirect;
+     pwidev = pnic_info->widev_priv;
+-    CFG80211_INFO("cookie:0x%llx", cfg_wfdirect_info->remain_on_ch_cookie);
++
+ #if (LINUX_VERSION_CODE < KERNEL_VERSION(3, 6, 0))
+     cfg80211_remain_on_channel_expired(pnic_info->ndev,
+                                        cfg_wfdirect_info->remain_on_ch_cookie,
+@@ -4407,7 +4005,6 @@
+ #endif
+ 
+     return ZT_RETURN_OK;
+-
+ }
+ 
+ zt_s32 zt_cfg80211_p2p_rx_mgmt(void *nic_info, void *param, zt_u32 param_len)
+@@ -4418,22 +4015,19 @@
+     zt_u32 frame_len = param_len;
+     p2p_info_st *p2p_info = NULL;
+ 
+-    CFG80211_DBG("start");
+-
+     if (NULL == nic_info)
+     {
+-        LOG_E("[%s, %d] input param is null", __func__, __LINE__);
+         return ZT_RETURN_FAIL;
+     }
+     pnic_info   = nic_info;
+     p2p_info    = pnic_info->p2p;
+     freq = zt_ch_2_freq(p2p_info->report_ch);
++
+ #if (LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 37)) || defined(COMPAT_KERNEL_RELEASE)
+     zt_cfg80211_rx_mgmt(pnic_info, freq, 0, pmgmt_frame, frame_len, GFP_ATOMIC);
+ #else
+     cfg80211_rx_action(pnic_info->ndev, freq, pmgmt_frame, frame_len, GFP_ATOMIC);
+ #endif
+-    CFG80211_INFO("report_ch:%d, freq:%d", p2p_info->report_ch, freq);
+     return 0;
+ }
+ 
+@@ -4445,10 +4039,8 @@
+     zt_widev_priv_t *pwidev = NULL;
+     cfg80211_wifidirect_info_st *cfg_wifi_info = NULL;
+ 
+-    CFG80211_DBG("start");
+     if (NULL == nic_info)
+     {
+-        LOG_E("[%s, %d] input param is null", __func__, __LINE__);
+         return ZT_RETURN_FAIL;
+     }
+ 
+@@ -4456,13 +4048,11 @@
+     ndev_priv = netdev_priv(pnic_info->ndev);
+     if (NULL == ndev_priv)
+     {
+-        LOG_E("[%s, %d] input param is null", __func__, __LINE__);
+         return ZT_RETURN_FAIL;
+     }
+     pwidev = &ndev_priv->widev_priv;
+     cfg_wifi_info = &ndev_priv->cfg80211_wifidirect;
+-    CFG80211_DBG("[%d] remain_on_ch_cookie:%lld", pnic_info->ndev_id,
+-                 cfg_wifi_info->remain_on_ch_cookie);
++
+ #if (LINUX_VERSION_CODE < KERNEL_VERSION(3, 6, 0))
+     zt_cfg80211_ready_on_channel(pnic_info->ndev,
+                                  cfg_wifi_info->remain_on_ch_cookie, &cfg_wifi_info->remain_on_ch_channel,
+@@ -4476,4 +4066,4 @@
+ }
+ 
+ #endif
+-
++#endif
+diff -ruN '--exclude=*.o' '--exclude=*.ko' '--exclude=.*.cmd' '--exclude=*.mod*' '--exclude=Module.symvers' '--exclude=modules.order' '--exclude=wifi.local.cfg' '--exclude=.git' upstream/src/os/linux/hif/usb.c fixed/src/os/linux/hif/usb.c
+--- a/src/os/linux/hif/usb.c	2026-10-05 07:10:36.597433416 +0800
++++ fixed/src/os/linux/hif/usb.c	2026-10-05 07:10:33.417463872 +0800
+@@ -14,7 +14,16 @@
+  * option) any later version.
+  *
+  */
+-
++/*
++ * ... (mantém o cabeçalho original e licença intactos) ...
++ * Original Author: houchuang
++ * Copyright (c) 2021 Shandong ZTop Microelectronics Co., Ltd
++ *
++ * Modifications:
++ * Copyright (c) 2026 João Fco. O Antunes / jfco.antunes@gmail.com
++ * - Ported and fixed for Linux Kernel 6.8+ / 7.0+ compatibility
++ *   (timer_delete, cfg80211 link_id APIs, and struct usb_driver shutdown changes).
++ */
+ 
+ #include <linux/usb.h>
+ #include <linux/module.h>
+@@ -1110,8 +1119,10 @@
+     .resume         =   NULL,//zt_usb_resume,
+     .reset_resume   =   NULL,//zt_usb_resume,
+ #if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 11, 0))
+-    .shutdown       =   zt_usb_shutdown,
+-#elseif (LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 19)) && (LINUX_VERSION_CODE < KERNEL_VERSION(6, 8, 0))
++    .shutdown                   = zt_usb_shutdown,
++#elif (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 8, 0))
++    .driver.shutdown            = zt_usb_shutdown,
++#elif (LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 19))
+     .drvwrap.driver.shutdown    = zt_usb_shutdown,
+ #endif
+     .supports_autosuspend       = 1,
+diff -ruN '--exclude=*.o' '--exclude=*.ko' '--exclude=.*.cmd' '--exclude=*.mod*' '--exclude=Module.symvers' '--exclude=modules.order' '--exclude=wifi.local.cfg' '--exclude=.git' upstream/src/os/linux/os_porting/zt_os_api_timer.c fixed/src/os/linux/os_porting/zt_os_api_timer.c
+--- a/src/os/linux/os_porting/zt_os_api_timer.c	2026-10-05 07:10:36.598990318 +0800
++++ fixed/src/os/linux/os_porting/zt_os_api_timer.c	2026-10-05 07:10:33.419463853 +0800
+@@ -23,7 +23,17 @@
+ 
+ /* function declaration */
+ 
+-
++/*
++ * ... (mantém o cabeçalho original e licença intactos) ...
++ * Original Author: houchuang
++ * Copyright (c) 2021 Shandong ZTop Microelectronics Co., Ltd
++ *
++ * Modifications:
++ * Copyright (c) 2026 João Fco. O Antunes / jfco.antunes@gmail.com
++ * - Ported and fixed for Linux Kernel 6.8+ / 7.0+ compatibility
++ *   (timer_delete, cfg80211 link_id APIs, and struct usb_driver shutdown changes).
++ */
++ 
+ zt_inline zt_u64 zt_os_api_timestamp(void)
+ {
+     return jiffies;
+@@ -60,7 +70,11 @@
+ 
+ zt_inline zt_s32 zt_os_api_timer_unreg(zt_os_api_timer_t *ptimer)
+ {
++    #if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 15, 0))
++    timer_delete(ptimer);
++#else
+     del_timer(ptimer);
++#endif
+     return 0;
+ }
+ 

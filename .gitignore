@@ -1,0 +1,9 @@
+*.o
+*.mod
+*.mod.c
+.*.cmd
+Module.symvers
+modules.order
+wifi.local.cfg
+debs/
+payload/
