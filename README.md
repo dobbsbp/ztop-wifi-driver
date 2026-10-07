@@ -1,13 +1,56 @@
 # ZTopInc 802.11n NIC (USB `350b:9101`, chip ZT9101) on Linux
 
-Working Linux driver + offline installer for the **ZTopInc 802.11n NIC** USB Wi-Fi
-adapter, built so an **HP t630 thin client running Debian 13 (trixie)** with no
-Ethernet could get on Wi-Fi.
+**Your USB Wi-Fi adapter shows up in `lsusb` but Linux gives you no Wi-Fi interface?
+This repo is the fix.** It is a working Linux driver, an offline installer, and a
+DKMS setup so it survives kernel updates. Tested on **Debian 13 (trixie), kernel 6.12**.
 
-**Result (2026-10-05):** the t630 (kernel `6.12.107+deb13-amd64`) loaded the
-driver and connected to `your_wifi_name`. (The user reported the connection up; the
-installer's built-in ping/HTTPS check output was not captured here, so internet
-through it is assumed rather than separately verified.)
+```
+$ lsusb
+Bus 001 Device 003: ID 350b:9101 ZTopInc 802.11n NIC
+```
+
+If you see `350b:9101` / `ZTopInc 802.11n NIC`, you are in the right place. You are
+not doing anything wrong, and this is solvable.
+
+## Is this you?
+
+- `lsusb` lists **ZTopInc 802.11n NIC** (ID `350b:9101`), but `ip link`, `nmcli` and
+  your desktop's Wi-Fi menu show **no wireless interface**.
+- `dmesg` shows the device being detected but nothing binds to it.
+- The Wi-Fi works on Windows or Android, but on Linux it is a dead stick.
+- You searched for `ZT9101`, `zt9101_ztopmac_usb`, `350b:9101` or "ZTop Wi-Fi Linux
+  driver" and found only old vendor source that does not compile on a modern kernel.
+- You have **no Ethernet cable**, so you cannot just `apt install` your way out.
+  (That was exactly my situation, and this repo is built for it: the installer works
+  **fully offline** from a USB stick.)
+
+**Why it doesn't work out of the box:** the ZT9101 has no driver in the Linux kernel,
+and its firmware is not in Debian's `firmware-*` packages. The vendor's driver exists,
+but it fails to build on current kernels and, worse, builds "successfully" with bugs
+that crash the kernel. This repo contains the fixed driver, the firmware, and a
+prebuilt module for Debian 13 / kernel 6.12.107, so you can skip compiling entirely.
+
+## Start here (pick your path)
+
+| Your situation | Do this |
+|---|---|
+| **No Ethernet, Debian 13 amd64, kernel 6.12.107** (the t630 case) | [Quick start](#quick-start-install-on-the-t630-or-any-debian-13-amd64-kernel-612107): prebuilt module, offline USB installer |
+| **Different kernel version** | [Different kernel](#different-kernel-eg-after-apt-upgrade): rebuild with `make` |
+| **Already working, want it to survive `apt upgrade`** | [Surviving kernel updates (DKMS)](#surviving-kernel-updates-dkms) |
+| **Kernel 7.x** | Builds and loads, but is experimental. See [Caveats](#caveats--honest-status) |
+| **Something broke** | [Troubleshooting](#troubleshooting) |
+
+**Search terms** (for the next person who needs this): ZT9101, ZTopInc 802.11n NIC,
+350b:9101, zt9101_ztopmac_usb, ZTop USB Wi-Fi Linux driver, ZTop wifi Debian 13,
+USB Wi-Fi adapter detected but no interface, HP t630 Wi-Fi.
+
+**Result (2026-10-05):** an HP t630 thin client running Debian 13 (kernel
+`6.12.107+deb13-amd64`), with no Ethernet, loaded this driver and connected to Wi-Fi.
+This adapter has been that machine's only network connection since. (The installer's
+built-in ping/HTTPS check output was not captured on the first run.)
+
+If it works for you, or doesn't, please open an issue. Reports for other kernels,
+distros and adapter brands are the most useful thing you can add.
 
 ---
 
@@ -22,7 +65,9 @@ scripts/
   t630-install.sh               the installer that runs ON the target machine
   stage-usb.sh                  copies everything onto the USB stick (run on a laptop)
   fetch-debs.sh                 re-downloads the offline .deb package set (229 MB)
+  dkms-install.sh               registers the driver with DKMS (survives kernel updates)
   laptop-test-connect.sh        load + connect on the laptop (see Caveats)
+driver/dkms.conf                DKMS configuration
 ```
 
 The 165 offline `.deb` packages are **not** stored here (229 MB) -
@@ -114,6 +159,57 @@ hostname -I                       # then: ssh USER@THAT_IP
 
 The IP comes from DHCP and can change; reserve it in the router, or install
 `avahi-daemon` and use `HOSTNAME.local`.
+
+---
+
+## Surviving kernel updates (DKMS)
+
+The prebuilt `.ko` only loads on the exact kernel it was built for. Without DKMS, an
+`apt upgrade` that installs a new kernel **silently removes your Wi-Fi at the next
+reboot**, which is a real problem if the adapter is your only connection.
+**DKMS** stores the driver source and rebuilds the module automatically for every new
+kernel.
+
+```bash
+# after install.sh has worked once (it provides the firmware + wifi.cfg in /opt/ztop-wifi)
+su -c 'bash scripts/dkms-install.sh'
+dkms status        # zt9101/1.0, <kernel>, x86_64: installed
+```
+
+`driver/dkms.conf` drives this. The script needs internet, which the working Wi-Fi
+provides. It does not unload the running module, so your connection stays up.
+
+- **Gotcha:** DKMS rewrites any `make ...` command to add `KERNELRELEASE=<ver>`, which
+  makes the vendor Makefile take its kbuild-only branch and define no targets
+  (`make: *** No targets. Stop.`). `dkms.conf` therefore starts the command with
+  `env make ...` so DKMS leaves it alone.
+- New kernels need their headers. Install the `linux-headers-amd64` metapackage so
+  headers arrive together with each kernel.
+- Until you have a wired fallback, consider `apt-mark hold linux-image-amd64` (and the
+  current `linux-image-$(uname -r)`) so an update cannot take your only connection
+  away. Undo with `apt-mark unhold`.
+- The module installs to `/lib/modules/<kver>/updates/dkms/` and takes priority over
+  the older copy in `extra/`.
+
+**Status:** verified on `6.12.107+deb13`: DKMS build and install succeed, and the
+resulting module's `vermagic` matches the running kernel. **Not yet tested:** loading
+the DKMS-built module after a reboot, and the automatic rebuild when a *newer* kernel
+is installed. If you try either, please report back.
+
+---
+
+## Troubleshooting
+
+| Symptom | Cause / fix |
+|---|---|
+| `Key was rejected by service` on `modprobe` | Secure Boot is on and the module is unsigned. Disable Secure Boot in firmware setup (HP: **F10**). |
+| `lsusb` shows the stick but there is still no interface | The module isn't loaded. Run `sudo modprobe zt9101_ztopmac_usb`, then check `dmesg \| tail -30`. |
+| `modprobe: command not found` / `depmod: command not found` | They live in `/usr/sbin`, which Debian leaves out of non-root `PATH`. Use `su -` or `export PATH=$PATH:/usr/sbin:/sbin`. |
+| `Exec format error` or `Invalid module format` | The prebuilt `.ko` doesn't match your kernel (`uname -r`). Rebuild: see [Different kernel](#different-kernel-eg-after-apt-upgrade). |
+| Module loads but never connects, firmware errors in `dmesg` | Paths in `wifi.cfg` must be **absolute** (`/opt/ztop-wifi/fw/...`). `install.sh` sets this. |
+| Wi-Fi vanished after `apt upgrade` and a reboot | New kernel, old module. Boot the old kernel from GRUB's "Advanced options", then set up [DKMS](#surviving-kernel-updates-dkms). |
+| `uptime` load average sits at about 3 with an idle CPU | **Harmless.** The driver's three kernel threads (`wlan_mgmt_00`, `ap_00`, `mlme_00`) sleep in uninterruptible state, which Linux counts as load. The connection is fine. |
+| `ip` / `nmcli` hang after a crash | A kernel oops inside the driver can leave `rtnl_lock` held. Only a reboot recovers it. |
 
 ---
 
